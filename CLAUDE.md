@@ -1,0 +1,48 @@
+# CLAUDE.md — Permanent Development Rules
+
+Multi-tenant Warehouse Management System. Stack: Next.js, TypeScript, PostgreSQL, Prisma, Tailwind CSS, shadcn/ui, Zod. Future warehouse editor: React Konva and/or SVG (2D only, no 3D). No MongoDB. No Docker for now.
+
+Read `/docs` before changing architecture. Start with `docs/architecture.md` and `docs/roadmap.md`.
+
+## Current phase
+
+Phase 0 (architecture/docs) is complete pending user review. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+
+## Rules
+
+1. **Keep solutions simple.** Choose the simplest design that satisfies the requirement and the documented invariants.
+2. **Avoid unnecessary dependencies.** Justify every new package; prefer the platform, Prisma, Zod and shadcn/ui first.
+3. **Do not silently change architecture.** Any change to the documented architecture requires updating the relevant `/docs` file in the same change and calling it out to the user.
+4. **Do not hard-code warehouse structures.** Layouts, racks, levels, bays and positions come from database configuration.
+5. **Do not hard-code pallet types.** They are per-organization data (`PalletType`), in millimeters.
+6. **Do not hard-code location counts.** Bay/position counts are derived from or validated against physical configuration.
+7. **Never put secrets in source code, docs, tests, fixtures or commits.**
+8. **Use environment variables** (`DATABASE_URL`, etc.) for secrets and configuration. Provide `.env.example` with placeholders only; `.env*` (except the example) stays git-ignored. Validate env with Zod at startup.
+9. **Schema changes only via Prisma migrations** (`prisma migrate dev` / `migrate deploy`). Never `db push` against anything but a throwaway database. Never edit an applied migration. Constraints Prisma can't express (CHECKs, partial indexes, RLS) go in hand-written SQL inside the migration.
+10. **Critical inventory operations run in PostgreSQL transactions** with the concurrency rules in `docs/inventory.md`.
+11. **Maintain inventory auditability.** Every quantity change writes an append-only `InventoryMovement` in the same transaction. Never update balances outside the inventory service. Never update/delete movements.
+12. **Business logic is separate from UI.** React components and route handlers/server actions call module services; they contain no business rules and no direct Prisma calls.
+13. **Write tests for critical inventory logic** (no negative stock, no double reservation, concurrency, movement-per-change, tenant isolation). Run against a real PostgreSQL test database, not mocks.
+14. **Design integrations to be extensible.** Core domain never imports from `integrations/`; adapters depend on core ports, not the reverse. Never couple to a customer's ERP schema.
+15. **Maintain multi-tenant isolation.** Every tenant-owned table has `organizationId`; every query goes through the tenant-scoped data layer; cross-tenant references are blocked by composite foreign keys. `organizationId` comes from the authenticated session, never from client input.
+16. **Do not move to the next development phase automatically.** Stop at the end of each phase and wait for review.
+17. **Each phase is implemented, tested, reviewed and committed separately.**
+
+## Testing database
+
+**Never use the development database for automated tests.** Tests run only against the separate `warehouse_wms_test` database (own env var, e.g. `TEST_DATABASE_URL`). Test setup must refuse to run if the connection points at any other database.
+
+## Finalized decisions
+
+UUID ids; Auth.js; levels stored 0-based and displayed 1-based; Product and SKU are one entity in v1; RLS deferred but the design stays RLS-compatible; separate test database. See `docs/roadmap.md`.
+
+## Conventions
+
+- Dimensions: integer millimeters (`...Mm`). Weights: integer grams (`...G`). Never strings with units.
+- Quantities: integers in the product's base unit.
+- Timestamps: `timestamptz`, UTC. Money is not in scope unless a phase says so.
+- IDs: UUIDs; never expose or parse as meaning. Business identifiers (codes) are separate unique-per-scope fields.
+- Validate all external input with Zod at the boundary (API, server actions, imports, webhooks). Domain code receives validated types.
+- Prefer deleting data by soft-delete/archival (`archivedAt`) for entities referenced by history (products, locations, racks).
+- Folder layout: see `docs/architecture.md#folder-structure`. Domain modules live in `src/modules/<domain>`; dependency direction is `ui → service → domain/repo`, never reverse.
+- Commit style: one logical change per commit; phase boundaries get their own commit.
