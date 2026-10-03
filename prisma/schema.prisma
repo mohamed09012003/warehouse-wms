@@ -26,10 +26,13 @@ model Organization {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  roles       Role[]
-  memberships Membership[]
-  palletTypes PalletType[]
-  warehouses  Warehouse[]
+  roles               Role[]
+  memberships         Membership[]
+  palletTypes         PalletType[]
+  warehouses          Warehouse[]
+  products            Product[]
+  inventoryOperations InventoryOperation[]
+  reservations        Reservation[]
 }
 
 // Users are GLOBAL identities (not tenant-owned). Access to an organization is via Membership.
@@ -42,7 +45,9 @@ model User {
   createdAt    DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
 
-  memberships Membership[]
+  memberships         Membership[]
+  inventoryOperations InventoryOperation[]
+  reservations        Reservation[]
 }
 
 // Roles are per-organization. Permission NAMES are defined in code
@@ -241,8 +246,179 @@ model Position {
   bay        Bay         @relation(fields: [organizationId, rackId, bayId], references: [organizationId, rackId, id], onDelete: Cascade)
   palletType PalletType? @relation(fields: [organizationId, palletTypeId], references: [organizationId, id], onDelete: Restrict)
 
+  balances InventoryBalance[]
+
+  @@unique([organizationId, warehouseId, id])
   @@unique([warehouseId, code])
   @@unique([bayId, levelId, positionIndex])
   @@unique([organizationId, id])
   @@index([rackId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog and inventory (Phase 3). See docs/inventory.md.
+// Quantities are integers. Balances change ONLY through guarded atomic statements in
+// modules/inventory/repo; every change writes InventoryMovement rows in the same transaction.
+// ---------------------------------------------------------------------------
+
+enum InventoryMovementType {
+  RECEIVE
+  MOVE
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  RESERVE
+  RELEASE
+}
+
+enum ReservationStatus {
+  ACTIVE
+  RELEASED
+}
+
+// Product and SKU are the same entity in v1. SKU is unique per organization (stored uppercase).
+model Product {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  sku            String
+  name           String
+  description    String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  barcodes         ProductBarcode[]
+  balances         InventoryBalance[]
+  movements        InventoryMovement[]
+  reservationLines ReservationLine[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, sku])
+  @@index([organizationId, name])
+}
+
+model ProductBarcode {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  productId      String   @db.Uuid
+  barcode        String
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  product Product @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Cascade)
+
+  // A barcode resolves to at most one product per organization.
+  @@unique([organizationId, barcode])
+  @@index([productId])
+}
+
+// Current stock of one product at one physical Position. available = onHand - reserved (never stored).
+// CHECK constraints (migration SQL): onHand >= 0, reserved >= 0, reserved <= onHand.
+model InventoryBalance {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  warehouseId    String   @db.Uuid
+  positionId     String   @db.Uuid
+  productId      String   @db.Uuid
+  onHand         Int      @default(0)
+  reserved       Int      @default(0)
+  version        Int      @default(1)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  // Composite FKs: the position must be in this organization AND this warehouse. RESTRICT, so a
+  // position that has a balance row can never be silently deleted by a layout change.
+  position Position @relation(fields: [organizationId, warehouseId, positionId], references: [organizationId, warehouseId, id], onDelete: Restrict)
+  product  Product  @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, positionId, productId])
+  @@index([organizationId, productId])
+  @@index([positionId])
+  @@index([organizationId, warehouseId])
+}
+
+// One business operation (receive, move, ...). Groups the movement rows it wrote and carries
+// the idempotency key. Append-only (trigger in migration SQL).
+model InventoryOperation {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String                @db.Uuid
+  type           InventoryMovementType
+  idempotencyKey String?
+  requestHash    String?
+  actorUserId    String?               @db.Uuid
+  reason         String?
+  refType        String?
+  refId          String?
+  createdAt      DateTime              @default(now()) @db.Timestamptz(3)
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actor        User?               @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  movements    InventoryMovement[]
+
+  // NULL keys never collide, so operations without a key are unconstrained.
+  @@unique([organizationId, idempotencyKey])
+  @@unique([organizationId, id])
+}
+
+// Immutable audit ledger: one row per balance change. Positions are referenced by plain id plus a
+// code snapshot (no FK) so history stays readable after the layout changes.
+model InventoryMovement {
+  id                      String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId          String                @db.Uuid
+  operationId             String                @db.Uuid
+  type                    InventoryMovementType
+  warehouseId             String                @db.Uuid
+  productId               String                @db.Uuid
+  positionId              String                @db.Uuid
+  positionCode            String
+  counterpartPositionId   String?               @db.Uuid
+  counterpartPositionCode String?
+  qtyDelta                Int
+  reservedDelta           Int
+  onHandAfter             Int
+  reservedAfter           Int
+  createdAt               DateTime              @default(now()) @db.Timestamptz(3)
+
+  operation InventoryOperation @relation(fields: [organizationId, operationId], references: [organizationId, id], onDelete: Restrict)
+  product   Product            @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([organizationId, productId, createdAt])
+  @@index([organizationId, positionId, createdAt])
+  @@index([operationId])
+  @@index([organizationId, createdAt])
+}
+
+model Reservation {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String            @db.Uuid
+  status          ReservationStatus @default(ACTIVE)
+  refType         String?
+  refId           String?
+  note            String?
+  createdByUserId String?           @db.Uuid
+  createdAt       DateTime          @default(now()) @db.Timestamptz(3)
+  releasedAt      DateTime?         @db.Timestamptz(3)
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy    User?             @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  lines        ReservationLine[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, status])
+}
+
+// A claim on one product at one position. Position is a plain id + code snapshot (history).
+model ReservationLine {
+  id             String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String @db.Uuid
+  reservationId  String @db.Uuid
+  productId      String @db.Uuid
+  positionId     String @db.Uuid
+  positionCode   String
+  quantity       Int
+
+  reservation Reservation @relation(fields: [organizationId, reservationId], references: [organizationId, id], onDelete: Cascade)
+  product     Product     @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([reservationId, positionId, productId])
+  @@index([organizationId, productId])
 }

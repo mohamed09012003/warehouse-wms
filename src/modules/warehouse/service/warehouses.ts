@@ -110,3 +110,19 @@ export async function createPalletType(ctx: TenantContext, raw: unknown): Promis
     throw error;
   }
 }
+
+/**
+ * Internal lookup for other modules (inventory): tenant-scoped, no permission check (callers
+ * check their own). Position ids from other organizations are simply absent from the result.
+ */
+export async function lookupPositions(ctx: TenantContext, ids: string[]) {
+  const rows = await warehouseRepo(ctx).positionsByIds([...new Set(ids)]);
+  return new Map(rows.map((p) => [p.id, p]));
+}
+
+/** Type-ahead search by location-code prefix within one warehouse. */
+export async function searchPositions(ctx: TenantContext, warehouseId: string, query: string) {
+  requirePermission(ctx, "warehouse.view");
+  const prefix = query.trim().toUpperCase().slice(0, 40);
+  return warehouseRepo(ctx).searchPositions(warehouseId, prefix, 30);
+}

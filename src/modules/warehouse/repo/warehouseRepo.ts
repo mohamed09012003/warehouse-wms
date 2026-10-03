@@ -4,6 +4,7 @@ import { prisma } from "@/server/db/client";
 import type { DbClient } from "@/server/db";
 import type { TenantContext } from "@/modules/tenancy";
 import type { Prisma } from "@/generated/prisma/client";
+import { PositionInUseError } from "@/lib/errors";
 
 export function warehouseRepo(ctx: TenantContext, db: DbClient = prisma) {
   const org = { organizationId: ctx.organizationId };
@@ -86,11 +87,46 @@ export function warehouseRepo(ctx: TenantContext, db: DbClient = prisma) {
       }),
     updatePosition: (id: string, data: { code: string; palletTypeId: string | null }) =>
       db.position.updateMany({ where: { ...org, id }, data }),
+    /** Tenant-scoped lookup used by inventory (ids from other organizations are simply absent). */
+    positionsByIds: (ids: string[]) =>
+      db.position.findMany({ where: { ...org, id: { in: ids } }, select: { id: true, code: true, warehouseId: true } }),
+    searchPositions: (warehouseId: string, prefix: string, limit: number) =>
+      db.position.findMany({
+        where: { ...org, warehouseId, ...(prefix ? { code: { startsWith: prefix } } : {}) },
+        orderBy: { code: "asc" },
+        take: limit,
+        select: { id: true, code: true },
+      }),
     /**
-     * The ONLY way positions are removed. Phase 3 (inventory) must make this refuse positions
-     * that hold stock or have movement history (they must be archived instead).
+     * The ONLY way positions are removed. A position that holds stock or reservations
+     * (onHand > 0 or reserved > 0) is never deleted: this throws PositionInUseError and the
+     * caller's transaction rolls back. Empty balance rows (0/0) are cleaned up first because the
+     * balance -> position foreign key is RESTRICT. The FK is also the backstop for a receive that
+     * races with this delete.
      */
-    removePositions: (ids: string[]) => db.position.deleteMany({ where: { ...org, id: { in: ids } } }),
+    removePositions: async (ids: string[]) => {
+      if (ids.length === 0) return { count: 0 };
+      const occupied = await db.inventoryBalance.findMany({
+        where: { ...org, positionId: { in: ids }, OR: [{ onHand: { gt: 0 } }, { reserved: { gt: 0 } }] },
+        select: { position: { select: { code: true } } },
+      });
+      if (occupied.length > 0) {
+        const codes = [...new Set(occupied.map((b) => b.position.code))].sort();
+        throw new PositionInUseError(
+          `Cannot remove positions that hold stock: ${codes.slice(0, 5).join(", ")}${codes.length > 5 ? `, and ${codes.length - 5} more` : ""}`,
+          { positions: codes },
+        );
+      }
+      await db.inventoryBalance.deleteMany({ where: { ...org, positionId: { in: ids }, onHand: 0, reserved: 0 } });
+      try {
+        return await db.position.deleteMany({ where: { ...org, id: { in: ids } } });
+      } catch (error) {
+        if ((error as { code?: unknown })?.code === "P2003") {
+          throw new PositionInUseError("Cannot remove positions: stock was just placed on them");
+        }
+        throw error;
+      }
+    },
   };
 }
 

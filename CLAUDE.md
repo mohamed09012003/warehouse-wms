@@ -6,9 +6,18 @@ Read `/docs` before changing architecture. Start with `docs/architecture.md` and
 
 ## Current phase
 
-Phase 2 (warehouse structure + visual designer) is implemented and awaiting review; Phase 1 is committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+Phase 3 (catalog + inventory core) is implemented and awaiting review; Phases 0-2 are committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
 
 Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/dist/docs/` before writing Next-specific code.
+
+## Inventory rules (Phase 3)
+
+- Only `modules/inventory` services change `InventoryBalance`, through the guarded SQL functions in `repo/inventoryRepo.ts`. Never read a quantity, compute a new one and write it back.
+- Every quantity change writes `InventoryMovement` rows under an `InventoryOperation` in the same transaction. Movements and operations are append-only (database trigger); correct mistakes with a new operation.
+- Positions holding stock or reservations must never be deleted; layout code removes positions only through `warehouseRepo.removePositions`.
+- A position holds stock of ONE product at a time (partial unique index on `InventoryBalance(positionId) WHERE onHand > 0`; a different product gets `POSITION_OCCUPIED`). Never work around it; emptied positions are free again.
+- Reserved stock is not movable/adjustable; operations consume *available* (onHand − reserved) stock only.
+- Tests that touch inventory must run against the test database and may use `assertLedgerMatchesBalances` (tests/support/fixtures.ts).
 
 ## Commands
 

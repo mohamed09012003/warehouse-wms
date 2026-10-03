@@ -112,3 +112,24 @@ Prisma cannot declare these; they go in migration SQL files and are covered by t
 - `prisma migrate dev` locally; `migrate deploy` elsewhere. Never edit applied migrations; fix forward.
 - Separate databases for dev and test (e.g. `warehouse_wms_test`), created by the developer; tests reset it. Never run tests against the dev DB.
 - Seed script is dev-only, contains fake data only.
+
+## Implemented in Phase 3
+
+Tables: `Product`, `ProductBarcode`, `InventoryBalance`, `InventoryOperation`, `InventoryMovement`, `Reservation`, `ReservationLine`; enums `InventoryMovementType` (RECEIVE, MOVE, ADJUSTMENT_IN, ADJUSTMENT_OUT, RESERVE, RELEASE) and `ReservationStatus` (ACTIVE, RELEASED). Migration `catalog_inventory`.
+
+Differences from the design above:
+- **SKU** is stored uppercase and CHECKed against `^[A-Z0-9][A-Z0-9._/-]{0,63}$`; it is immutable through the application. `ProductBarcode` has no `packQty` yet; barcodes are unique per organization, 1–128 characters, trimmed.
+- **`InventoryOperation`** (new) holds the idempotency key (`unique(organizationId, idempotencyKey)`; NULLs never collide) and groups movement rows. The partial-unique-index idea was unnecessary.
+- **`InventoryMovement`** stores `positionId` / `counterpartPositionId` as plain ids with code snapshots (no FK to Position); one row per balance change; CHECK enforces the sign pattern per type and valid after-snapshots. `UPDATE`/`DELETE` on movements and operations raise an exception (trigger `inventory_ledger_is_append_only`).
+- **`InventoryBalance`** has composite FKs to `Position(organizationId, warehouseId, id)` (new unique) and `Product`, both RESTRICT; CHECK `onHand >= 0 AND reserved >= 0 AND reserved <= onHand AND onHand <= 1000000000`.
+- **`Reservation`/`ReservationLine`**: line positions are plain ids + code snapshots; `quantity > 0` CHECK.
+- The migration also adds the new permission names to the existing built-in roles.
+
+### Single-product position occupancy (migration `single_product_per_position`)
+
+```sql
+CREATE UNIQUE INDEX "InventoryBalance_one_product_per_position_idx"
+  ON "InventoryBalance" ("positionId") WHERE "onHand" > 0;
+```
+
+Hand-written because Prisma cannot model partial indexes; `schema.prisma` is unchanged and `prisma migrate diff` reports no drift. A DO block at the top of the migration aborts with a descriptive error (no data is changed) if existing rows already violate the rule. The unique violation (23505) naming this index is mapped to `POSITION_OCCUPIED` in `normalizeError`. See `docs/inventory.md`.

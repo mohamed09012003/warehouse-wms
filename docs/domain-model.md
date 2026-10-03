@@ -73,3 +73,7 @@ Organization ─┬─ Membership ── User            (users are global; memb
 5. Position dimensions must fit within bay width × rack depth × level clearance (validated in domain code).
 6. Location codes are unique per warehouse.
 7. A barcode resolves to at most one product per organization.
+
+## Implemented in Phase 3
+
+`Product` (= SKU in v1; active/disabled, never deleted), `ProductBarcode`, `InventoryBalance`, `InventoryMovement` (with an `InventoryOperation` header), `Reservation` / `ReservationLine`. Lifecycles: Reservation ACTIVE → RELEASED. Orders, picking and packing entities are still design-only. Invariant 2 ("every change has a movement in the same transaction") and the stock invariants above are enforced by the inventory service plus database CHECKs; invariant 4 is now enforced for stock-holding positions (see `docs/inventory.md`).

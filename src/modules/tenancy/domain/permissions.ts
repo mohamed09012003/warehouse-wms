@@ -8,6 +8,13 @@ export const PERMISSIONS = [
   "roles.manage",
   "warehouse.view",
   "warehouse.design",
+  "products.view",
+  "products.manage",
+  "inventory.view",
+  // receive, move and adjust stock
+  "inventory.adjust",
+  // create and release reservations
+  "inventory.reserve",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -18,8 +25,22 @@ export function isPermission(value: string): value is Permission {
 /** Default roles created for every new organization. Editable afterwards (data). */
 export const DEFAULT_ROLES: ReadonlyArray<{ name: string; permissions: readonly Permission[] }> = [
   { name: "Owner", permissions: PERMISSIONS },
-  { name: "Admin", permissions: ["org.read", "org.manage", "members.manage", "warehouse.view", "warehouse.design"] },
-  { name: "Member", permissions: ["org.read", "warehouse.view"] },
+  {
+    name: "Admin",
+    permissions: [
+      "org.read",
+      "org.manage",
+      "members.manage",
+      "warehouse.view",
+      "warehouse.design",
+      "products.view",
+      "products.manage",
+      "inventory.view",
+      "inventory.adjust",
+      "inventory.reserve",
+    ],
+  },
+  { name: "Member", permissions: ["org.read", "warehouse.view", "products.view", "inventory.view"] },
 ];
 
 export const OWNER_ROLE_NAME = "Owner";

@@ -36,3 +36,18 @@ export async function readJson(request: Request): Promise<unknown> {
     throw new ValidationError("Request body is not valid JSON");
   }
 }
+
+/** Query-string parameters as a plain object (first value wins). */
+export function queryOf(request: Request): Record<string, string> {
+  return Object.fromEntries(new URL(request.url).searchParams.entries());
+}
+
+/** Read a JSON body and merge the standard `Idempotency-Key` header into it (header wins). */
+export async function readJsonWithIdempotency(request: Request): Promise<unknown> {
+  const body = await readJson(request);
+  const key = request.headers.get("idempotency-key");
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    return key ? { ...(body as Record<string, unknown>), idempotencyKey: key } : body;
+  }
+  return body;
+}

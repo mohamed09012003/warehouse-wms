@@ -6,9 +6,9 @@ Rules (from CLAUDE.md): each phase is implemented, tested, reviewed and committe
 |---|---|---|
 | 0 | Architecture, domain model, docs, rules | Done |
 | 1 | Project foundation + tenancy + auth | Done |
-| 2 | Warehouse structure + visual designer (floor plan, racks/levels/bays/positions, rack elevation, pallet types) | **Implemented — awaiting review** |
-| 3 | Inventory core | |
-| 4 | (Merged into Phase 2 by request.) Products/catalog moves to the start of Phase 3 | |
+| 2 | Warehouse structure + visual designer (floor plan, racks/levels/bays/positions, rack elevation, pallet types) | Done |
+| 3 | Catalog + inventory core (products, barcodes, balances, movements, receive/move/adjust, reservations) | **Implemented — awaiting review** |
+| 4 | (Merged into Phase 2 by request; the designer is done.) | |
 | 5 | Orders + picking (backend, then mobile) | |
 | 6 | Packing + labels | |
 | 7 | REST API, API keys, outbox, webhooks | |
@@ -77,3 +77,21 @@ Scope note: Phase 2 was requested as "Warehouse Designer" and therefore combines
 - Elevation levels are labelled 1-based in the UI (Level 1 = ground, code L01); stored levelIndex is 0-based.
 - Permissions added: `warehouse.view`, `warehouse.design` (migration also updates existing built-in roles).
 - The `Position.kind` (receiving/staging/...) from docs/database.md is deferred to Phase 3.
+
+## Phase 3 implementation notes
+
+Scope: products/SKUs, product barcodes, inventory balances, append-only movements, receive / move / adjust, reservation create/release, permissions, minimal UI (Products, Product detail, Inventory), tests. Not included: picking, packing, orders, integrations, CSV, scanning UI, labels, background jobs.
+
+- **Concurrency**: guarded single-statement SQL, deterministic lock order, idempotency keys; proven by concurrency tests (20 parallel reservations for 5 units → exactly 5 succeed, opposite transfers do not deadlock, randomized storms keep the ledger equal to balances).
+- **Position protection**: positions holding stock or reservations can no longer be removed by layout changes (409 `POSITION_IN_USE`, whole save rolls back). Empty positions behave as before.
+- **UI**: location is entered as a location code and resolved server-side to a real Position id; operations carry an Idempotency-Key.
+- **Permissions added**: `products.view`, `products.manage`, `inventory.view`, `inventory.adjust`, `inventory.reserve`.
+
+- **One product per position** (added before the Phase 3 commit): enforced by a partial unique index on balances plus a service pre-check; see `docs/inventory.md`. The migration refuses to run if a position already holds several products (it changes no data).
+
+**For the next phase (picking: "Phase 4" in conversation, row 5 in the table above because the old Phase 4 was merged into Phase 2) to know:**
+- Reservations are the allocation primitive. Picking must *consume* reservations through the inventory module (add `CONSUMED` status and PICK movement types by migration); never write balances directly.
+- Reserved stock cannot be moved or adjusted away, by design. A pick that moves stock must consume its own reservation first.
+- `Position` rows with stock cannot be deleted; there is no archive column yet. If product requirements need "retire a position that still holds stock", add archiving deliberately.
+- Movements keep code snapshots, not foreign keys, to positions; do not rely on joining movements to positions.
+- The inventory operations are the only supported way to change `InventoryBalance`; the CHECK constraints and the append-only trigger are the last line of defence, not the design.

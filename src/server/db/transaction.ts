@@ -1,5 +1,6 @@
 import "server-only";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
+import { sqlStateOf } from "@/lib/errors";
 import { prisma } from "./client";
 
 export type Tx = Prisma.TransactionClient;
@@ -9,7 +10,8 @@ export type DbClient = PrismaClient | Tx;
 // 40001 serialization_failure, 40P01 deadlock_detected (Prisma reports write conflicts as P2034).
 function isRetryable(error: unknown): boolean {
   const e = error as { code?: unknown } | null;
-  return e?.code === "P2034" || e?.code === "40001" || e?.code === "40P01";
+  const state = sqlStateOf(error);
+  return e?.code === "P2034" || e?.code === "40001" || e?.code === "40P01" || state === "40001" || state === "40P01";
 }
 
 /**

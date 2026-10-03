@@ -67,7 +67,13 @@ export async function saveLayout(ctx: TenantContext, warehouseId: string, raw: u
       const existingRacks = await repo.racks(warehouseId);
       const keepRackIds = new Set(input.racks.map((r) => r.id));
       const removeRacks = existingRacks.filter((r) => !keepRackIds.has(r.id)).map((r) => r.id);
-      if (removeRacks.length) await repo.deleteRacks(removeRacks);
+      if (removeRacks.length) {
+      // Positions go through the guarded path first: a rack holding stock cannot be deleted.
+      for (const rackId of removeRacks) {
+        await repo.removePositions((await repo.positions(rackId)).map((p) => p.id));
+      }
+      await repo.deleteRacks(removeRacks);
+    }
       const existingRackIds = new Set(existingRacks.map((r) => r.id));
 
       for (const rack of input.racks) {
