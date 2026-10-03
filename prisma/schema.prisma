@@ -28,6 +28,8 @@ model Organization {
 
   roles       Role[]
   memberships Membership[]
+  palletTypes PalletType[]
+  warehouses  Warehouse[]
 }
 
 // Users are GLOBAL identities (not tenant-owned). Access to an organization is via Membership.
@@ -79,4 +81,168 @@ model Membership {
   @@unique([organizationId, id])
   @@index([userId])
   @@index([organizationId, roleId])
+}
+
+// ---------------------------------------------------------------------------
+// Warehouse structure (Phase 2). See docs/warehouse-model.md.
+// All lengths are integer millimetres, weights integer grams.
+// Floor-plan x/y is the CENTER of an item; rotation is clockwise degrees about the center.
+// ---------------------------------------------------------------------------
+
+enum WarehouseObjectType {
+  WALL
+  DOOR
+  AISLE
+  LOADING_AREA
+  PACKING_AREA
+  WORK_AREA
+}
+
+// Organization-defined pallet types. Never hard-coded.
+model PalletType {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @db.Uuid
+  name           String
+  widthMm        Int
+  lengthMm       Int
+  heightMm       Int?
+  maxLoadG       Int?
+  archivedAt     DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  bays         Bay[]
+  positions    Position[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, name])
+}
+
+model Warehouse {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  code           String
+  name           String
+  widthMm        Int
+  lengthMm       Int
+  // Optimistic concurrency for "save layout".
+  layoutVersion  Int      @default(1)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  objects      WarehouseObject[]
+  racks        Rack[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, code])
+}
+
+// Non-storage floor-plan item: wall, door, aisle, loading/packing/work area.
+model WarehouseObject {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String              @db.Uuid
+  warehouseId    String              @db.Uuid
+  type           WarehouseObjectType
+  label          String?
+  xMm            Int
+  yMm            Int
+  widthMm        Int
+  depthMm        Int
+  rotationDeg    Int                 @default(0)
+  createdAt      DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(3)
+
+  warehouse Warehouse @relation(fields: [organizationId, warehouseId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([warehouseId])
+}
+
+model Rack {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  warehouseId    String   @db.Uuid
+  code           String
+  name           String?
+  xMm            Int
+  yMm            Int
+  rotationDeg    Int      @default(0)
+  lengthMm       Int
+  depthMm        Int
+  heightMm       Int
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  warehouse Warehouse   @relation(fields: [organizationId, warehouseId], references: [organizationId, id], onDelete: Restrict)
+  levels    RackLevel[]
+  bays      Bay[]
+  positions Position[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, warehouseId, id])
+  @@unique([warehouseId, code])
+}
+
+// A tier. levelIndex is stored 0-based (0 = ground); displayed 1-based (L01).
+model RackLevel {
+  id             String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String @db.Uuid
+  rackId         String @db.Uuid
+  levelIndex     Int
+  // Height of the load beam above the floor, and usable vertical space for goods.
+  elevationMm    Int
+  clearanceMm    Int
+  maxLoadG       Int?
+
+  rack      Rack       @relation(fields: [organizationId, rackId], references: [organizationId, id], onDelete: Cascade)
+  positions Position[]
+
+  @@unique([rackId, levelIndex])
+  @@unique([organizationId, rackId, id])
+}
+
+// A section along the rack's length, shared by all levels. bayIndex is 1-based.
+// Bay depth = rack depth; bay height = the level's clearance (derived, not stored).
+model Bay {
+  id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String  @db.Uuid
+  rackId         String  @db.Uuid
+  bayIndex       Int
+  offsetMm       Int
+  widthMm        Int
+  // Storage configuration applied to every level of this bay.
+  positionCount  Int     @default(1)
+  palletTypeId   String? @db.Uuid
+
+  rack       Rack        @relation(fields: [organizationId, rackId], references: [organizationId, id], onDelete: Cascade)
+  palletType PalletType? @relation(fields: [organizationId, palletTypeId], references: [organizationId, id], onDelete: Restrict)
+  positions  Position[]
+
+  @@unique([rackId, bayIndex])
+  @@unique([organizationId, rackId, id])
+}
+
+// The smallest addressable storage location. Structured identifiers are the truth
+// (rack -> level -> bay -> positionIndex); `code` is generated from them and stored for lookup.
+model Position {
+  id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String  @db.Uuid
+  warehouseId    String  @db.Uuid
+  rackId         String  @db.Uuid
+  levelId        String  @db.Uuid
+  bayId          String  @db.Uuid
+  positionIndex  Int
+  code           String
+  palletTypeId   String? @db.Uuid
+
+  rack       Rack        @relation(fields: [organizationId, warehouseId, rackId], references: [organizationId, warehouseId, id], onDelete: Cascade)
+  level      RackLevel   @relation(fields: [organizationId, rackId, levelId], references: [organizationId, rackId, id], onDelete: Cascade)
+  bay        Bay         @relation(fields: [organizationId, rackId, bayId], references: [organizationId, rackId, id], onDelete: Cascade)
+  palletType PalletType? @relation(fields: [organizationId, palletTypeId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([warehouseId, code])
+  @@unique([bayId, levelId, positionIndex])
+  @@unique([organizationId, id])
+  @@index([rackId])
 }

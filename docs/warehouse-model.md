@@ -95,3 +95,9 @@ Both views are 2D; no 3D.
 ## Example (illustrative data, not code)
 
 Rack `R01`: length 12 000, depth 1 100, height 6 000. Levels: 0 (elev 150), 1 (elev 1 650), 2 (elev 3 150), 3 (elev 4 650), each clearance 1 400. Bays: 6 × 2 000 mm. One pallet position per bay-level ⇒ 24 positions `R01-L01-B01-P01 … R01-L04-B06-P01`. All numbers come from rows an admin entered.
+
+## Implementation status (Phase 2)
+
+Implemented: warehouses, floor-plan objects (wall, door, aisle, loading/packing/work area), racks, levels, bays, positions, org-defined pallet types, location-code generation, the floor-plan editor and the rack elevation view. See `docs/roadmap.md#phase-2-implementation-notes` for the decisions and limitations (SVG renderer, save/versioning semantics, position deletion vs archiving).
+
+Differences from the design above: `Bay` carries `positionCount` and `palletTypeId` (instead of per-level pallet defaults), and `Position.kind` / `allowOverfit` are not implemented yet. The default pallet clearance gap is 0 mm unless a caller supplies one.

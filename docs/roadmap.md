@@ -5,10 +5,10 @@ Rules (from CLAUDE.md): each phase is implemented, tested, reviewed and committe
 | Phase | Name | Status |
 |---|---|---|
 | 0 | Architecture, domain model, docs, rules | Done |
-| 1 | Project foundation + tenancy + auth | **Implemented — awaiting review** |
-| 2 | Catalog + warehouse structure (data model & CRUD, no visual editor) | |
+| 1 | Project foundation + tenancy + auth | Done |
+| 2 | Warehouse structure + visual designer (floor plan, racks/levels/bays/positions, rack elevation, pallet types) | **Implemented — awaiting review** |
 | 3 | Inventory core | |
-| 4 | Warehouse visual designer + rack elevation | |
+| 4 | (Merged into Phase 2 by request.) Products/catalog moves to the start of Phase 3 | |
 | 5 | Orders + picking (backend, then mobile) | |
 | 6 | Packing + labels | |
 | 7 | REST API, API keys, outbox, webhooks | |
@@ -64,3 +64,16 @@ Row-Level Security policies, query/index review, movement table partitioning if 
 - Extra hand-written SQL migration adds CHECKs (lowercase email, slug format).
 - No signup UI yet: organizations are created by `createOrganizationWithOwner` (seed/tests).
 - Raw Prisma use is restricted by ESLint to repositories, `server/db`, seed and tests.
+
+## Phase 2 implementation notes
+
+Scope note: Phase 2 was requested as "Warehouse Designer" and therefore combines the roadmap's structure phase and visual designer phase. Products/catalog are NOT included and move to Phase 3 with inventory.
+
+- Renderer: **plain SVG** (no new dependency) for both the floor plan and the rack elevation; React Konva was not needed. The data contract (`LayoutDto`) is renderer-independent.
+- Save model: the designer sends the complete desired layout (`PUT .../layout`) with the `layoutVersion` it loaded. Stale version -> 409. Missing items are deleted, new ids created, existing updated, and each rack's levels/bays/positions are reconciled in the same transaction.
+- Bays are rack-wide columns (all levels share them). `Bay` stores `positionCount` and `palletTypeId`, applied to every level. Positions are derived: levels x bays x positionCount.
+- Positions are currently **deleted** (not archived) when a structure shrinks or a rack is removed. `repo.removePositions` is the single choke point: **Phase 3 must make it refuse positions with stock or movement history** (archive instead). No stock exists yet, so nothing can be lost today.
+- Known limitation: renaming two racks to each other's codes in one save (a swap) fails with a conflict; rename one at a time.
+- Elevation levels are labelled 1-based in the UI (Level 1 = ground, code L01); stored levelIndex is 0-based.
+- Permissions added: `warehouse.view`, `warehouse.design` (migration also updates existing built-in roles).
+- The `Position.kind` (receiving/staging/...) from docs/database.md is deferred to Phase 3.

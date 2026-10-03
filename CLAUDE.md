@@ -6,7 +6,7 @@ Read `/docs` before changing architecture. Start with `docs/architecture.md` and
 
 ## Current phase
 
-Phase 1 (foundation, tenancy, auth) is implemented and awaiting review. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+Phase 2 (warehouse structure + visual designer) is implemented and awaiting review; Phase 1 is committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
 
 Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/dist/docs/` before writing Next-specific code.
 

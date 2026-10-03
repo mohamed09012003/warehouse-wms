@@ -19,12 +19,12 @@ function isRetryable(error: unknown): boolean {
  */
 export async function withTransaction<T>(
   fn: (tx: Tx) => Promise<T>,
-  options: { maxAttempts?: number } = {},
+  options: { maxAttempts?: number; timeoutMs?: number } = {},
 ): Promise<T> {
   const maxAttempts = options.maxAttempts ?? 3;
   for (let attempt = 1; ; attempt++) {
     try {
-      return await prisma.$transaction(fn);
+      return await prisma.$transaction(fn, { timeout: options.timeoutMs ?? 5000 });
     } catch (error) {
       if (attempt >= maxAttempts || !isRetryable(error)) throw error;
       await new Promise((r) => setTimeout(r, 25 * attempt + Math.random() * 25));
