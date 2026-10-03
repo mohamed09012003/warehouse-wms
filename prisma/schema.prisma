@@ -1,0 +1,82 @@
+// Phase 1 schema: tenancy + identity only. See docs/database.md.
+//
+// Tenant isolation pattern: every tenant-owned parent has @@unique([organizationId, id]);
+// children reference it with a COMPOSITE foreign key (organizationId, parentId), so a row
+// can never point at another organization's parent.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  DISABLED
+}
+
+model Organization {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  roles       Role[]
+  memberships Membership[]
+}
+
+// Users are GLOBAL identities (not tenant-owned). Access to an organization is via Membership.
+model User {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String    @unique // stored lowercase; enforced by CHECK in the migration
+  name         String
+  passwordHash String
+  disabledAt   DateTime? @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  memberships Membership[]
+}
+
+// Roles are per-organization. Permission NAMES are defined in code
+// (src/modules/tenancy/domain/permissions.ts); role -> permission assignment is data.
+model Role {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  name           String
+  permissions    String[]
+  isSystem       Boolean  @default(false)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  memberships  Membership[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, name])
+}
+
+model Membership {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @db.Uuid
+  userId         String           @db.Uuid
+  roleId         String           @db.Uuid
+  status         MembershipStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  // Composite FK: the role must belong to the same organization as the membership.
+  role         Role         @relation(fields: [organizationId, roleId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, userId])
+  @@unique([organizationId, id])
+  @@index([userId])
+  @@index([organizationId, roleId])
+}

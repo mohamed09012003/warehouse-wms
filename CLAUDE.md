@@ -6,7 +6,18 @@ Read `/docs` before changing architecture. Start with `docs/architecture.md` and
 
 ## Current phase
 
-Phase 0 (architecture/docs) is complete pending user review. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+Phase 1 (foundation, tenancy, auth) is implemented and awaiting review. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+
+Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/dist/docs/` before writing Next-specific code.
+
+## Commands
+
+- `npm run dev` / `build` / `start`; `npm run lint`; `npm run typecheck`
+- `npm test` — vitest against `warehouse_wms_test` only (applies migrations to it first)
+- `npm run db:migrate -- --name <name>` — `prisma migrate dev` after verifying DATABASE_URL is `warehouse_wms`
+- `npm run db:migrate:test` — `migrate deploy` against the test database only
+- `npm run db:seed` — fake demo org/user in the dev database (prints a random password once)
+- Env: copy `.env.example` to `.env` (DATABASE_URL, TEST_DATABASE_URL, AUTH_SECRET)
 
 ## Rules
 

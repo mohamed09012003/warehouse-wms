@@ -4,8 +4,8 @@ Rules (from CLAUDE.md): each phase is implemented, tested, reviewed and committe
 
 | Phase | Name | Status |
 |---|---|---|
-| 0 | Architecture, domain model, docs, rules | **Done — awaiting review** |
-| 1 | Project foundation + tenancy + auth | Next (not started) |
+| 0 | Architecture, domain model, docs, rules | Done |
+| 1 | Project foundation + tenancy + auth | **Implemented — awaiting review** |
 | 2 | Catalog + warehouse structure (data model & CRUD, no visual editor) | |
 | 3 | Inventory core | |
 | 4 | Warehouse visual designer + rack elevation | |
@@ -55,3 +55,12 @@ Row-Level Security policies, query/index review, movement table partitioning if 
 | Product / SKU | **Same entity** in v1 (variants deferred). |
 | Row-Level Security | **Deferred** (Phase 9), but the architecture stays **RLS-compatible**: `organizationId` on every tenant-owned table, composite FKs, all queries through tenant-scoped repositories and a single transaction helper where `SET LOCAL app.organization_id` can later be added. |
 | Testing | Automated tests use a separate **`warehouse_wms_test`** database, created by the developer and configured via its own environment variable. Never the development database. |
+
+## Phase 1 implementation notes (deviations/clarifications)
+
+- shadcn primitives live in `src/ui/primitives` (components.json aliases), matching the Phase 0 layout.
+- Tenant resolution: `/[orgSlug]` routes call `resolveTenantContext(userId, slug)` on every request (layout + pages); no `proxy.ts`/middleware is used, so there is one enforcement point. Auth.js uses JWT sessions carrying only the user id.
+- `modules/tenancy/repo/bootstrapRepo.ts` holds the few queries that must run before a TenantContext exists; everything else goes through `repo(ctx)` factories.
+- Extra hand-written SQL migration adds CHECKs (lowercase email, slug format).
+- No signup UI yet: organizations are created by `createOrganizationWithOwner` (seed/tests).
+- Raw Prisma use is restricted by ESLint to repositories, `server/db`, seed and tests.

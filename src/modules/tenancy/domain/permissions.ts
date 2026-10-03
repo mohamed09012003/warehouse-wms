@@ -1,0 +1,18 @@
+// Permission NAMES are defined in code because they gate code paths.
+// Which role holds which permission is data (Role.permissions). Phase 1 keeps this minimal;
+// later phases add permissions such as "warehouse.design" or "inventory.adjust".
+export const PERMISSIONS = ["org.read", "org.manage", "members.manage", "roles.manage"] as const;
+export type Permission = (typeof PERMISSIONS)[number];
+
+export function isPermission(value: string): value is Permission {
+  return (PERMISSIONS as readonly string[]).includes(value);
+}
+
+/** Default roles created for every new organization. Editable afterwards (data). */
+export const DEFAULT_ROLES: ReadonlyArray<{ name: string; permissions: readonly Permission[] }> = [
+  { name: "Owner", permissions: PERMISSIONS },
+  { name: "Admin", permissions: ["org.read", "org.manage", "members.manage"] },
+  { name: "Member", permissions: ["org.read"] },
+];
+
+export const OWNER_ROLE_NAME = "Owner";
