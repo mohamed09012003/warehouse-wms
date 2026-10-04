@@ -6,7 +6,7 @@ Read `/docs` before changing architecture. Start with `docs/architecture.md` and
 
 ## Current phase
 
-Phase 4 (orders + picking) is implemented and awaiting review; Phases 0-3 are committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+Phase 5 (packing) is implemented and awaiting review; Phases 0-4 are committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
 
 Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/dist/docs/` before writing Next-specific code.
 
@@ -26,6 +26,13 @@ Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/
 - Multi-row picking flows lock in this order: Wave → Order → PickTask → Reservation → InventoryBalance → OrderLine updates; ascending id within a type. Do not invent a different order.
 - Order-line quantities obey `requested ≥ allocated ≥ picked ≥ 0`; change them only through the guarded updates in `picking/repo`. Reservations created by allocation (`refType = ORDER_LINE`) are released only through the order/wave, never directly.
 - New movement types or enum values need a migration that also updates the movement CHECK (it ends with `ELSE false`); enum values added by `ALTER TYPE … ADD VALUE` cannot be used in the same migration, so compare through `::text`.
+
+## Packing rules (Phase 5)
+
+- Packing NEVER touches inventory: the packing module must not read or write `InventoryBalance`, `InventoryMovement`, `InventoryOperation` or `Reservation` (a test enforces it). Picking consumes stock; packing records picked quantity → packages.
+- `OrderLine.packedQty ≤ pickedQty` is the core invariant: change `packedQty` only through the guarded updates in `packing/repo` (CHECK constraint is the backstop). Picked quantity never decreases.
+- Package and item changes lock Session → Package; session lifecycle changes lock Order → Session (full order: Wave → Order → PackingSession → Package → PickTask → Reservation → Balance → OrderLine). Completed packages and sessions are immutable; one OPEN session per order (partial unique index).
+- All packing mutations go through `packingMutation` (one transaction, optional `Idempotency-Key` via `IdempotencyRecord`). Weight is integer grams, dimensions integer millimetres.
 
 ## Commands
 

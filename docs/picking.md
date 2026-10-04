@@ -108,4 +108,11 @@ On success, atomically: the reservation line's `consumedQuantity` increases (res
 - No route optimization, batch/zone/cluster picking, or short-pick workflow (a short pick today is "cancel the task/order and reallocate").
 - Order lines cannot be edited after creation (cancel and recreate).
 - Waves only take whole orders' unassigned tasks (no per-task selection); tasks cannot be moved between waves except by cancelling the wave.
-- Picked stock leaves the warehouse ledger at pick time (`PICK`); there is no staging location yet, which is where packing (next phase) will pick up.
+- Picked stock leaves the warehouse ledger at pick time (`PICK`); there is no staging location. Packing (Phase 5, see `docs/packing.md`) works from `OrderLine.pickedQty` and never touches inventory.
+
+## Interaction with packing (Phase 5)
+
+- Order statuses `PACKING` and `PACKED` now follow `PICKED` (see `docs/packing.md`). `PICKED` is final *for picking*; the only way on is a packing session.
+- Confirming the last pick while a packing session is open on the (until then partially picked) order turns it `PACKING`, not `PICKED`.
+- An order with an open packing session cannot be cancelled until the session is cancelled or completed; `PACKING` and `PACKED` orders are not cancellable.
+- Picking never overwrites `PACKING`/`PACKED`, and `OrderLine.packedQty ≤ pickedQty` means picked quantity is never decreased.

@@ -133,3 +133,52 @@ export async function assertPickingInvariants() {
     throw new Error(`reserved (${reservedTotal}) != outstanding of active reservations (${activeOutstanding})`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 (packing) fixtures
+// ---------------------------------------------------------------------------
+import { confirmPick } from "@/modules/picking";
+
+/**
+ * Pick `units` of an order (all tasks, in order) through the real picking flow: allocate, wave,
+ * release, start, confirm. `units` defaults to everything allocated.
+ */
+export async function pickOrder(ctx: TenantContext, orderId: string, units?: number) {
+  const waveId = await prepareWave(ctx, [orderId]);
+  let left = units ?? Number.MAX_SAFE_INTEGER;
+  const tasks = await prisma.pickTask.findMany({ where: { orderId }, orderBy: [{ positionCode: "asc" }, { id: "asc" }], include: { product: true } });
+  for (const t of tasks) {
+    if (left <= 0) break;
+    const qty = Math.min(left, t.quantity);
+    await confirmPick(ctx, { taskId: t.id, locationCode: t.positionCode, productCode: t.product.sku, quantity: qty });
+    left -= qty;
+  }
+  return waveId;
+}
+
+/** Everything inventory-related, as a string, to prove packing leaves it untouched. */
+export async function inventorySnapshot(): Promise<string> {
+  const balances = await prisma.inventoryBalance.findMany({ orderBy: { id: "asc" }, select: { id: true, onHand: true, reserved: true, version: true } });
+  const movements = await prisma.inventoryMovement.count();
+  const operations = await prisma.inventoryOperation.count();
+  const reservations = await prisma.reservation.findMany({ orderBy: { id: "asc" }, select: { id: true, status: true, lines: { select: { id: true, quantity: true, consumedQuantity: true }, orderBy: { id: "asc" } } } });
+  return JSON.stringify({ balances, movements, operations, reservations });
+}
+
+/** Invariants that must hold at all times for packing. */
+export async function assertPackingInvariants() {
+  const lines = await prisma.$queryRaw<{ id: string; packedQty: number; pickedQty: number; inPackages: bigint }[]>`
+    SELECT l."id", l."packedQty", l."pickedQty",
+           COALESCE((SELECT SUM(i."quantity") FROM "PackageItem" i JOIN "Package" p ON p."id" = i."packageId"
+                      WHERE i."orderLineId" = l."id" AND p."status"::text <> 'CANCELLED'), 0) AS "inPackages"
+      FROM "OrderLine" l`;
+  for (const l of lines) {
+    if (l.packedQty > l.pickedQty) throw new Error(`packed ${l.packedQty} > picked ${l.pickedQty} on line ${l.id}`);
+    if (Number(l.inPackages) !== l.packedQty) throw new Error(`line ${l.id}: packedQty ${l.packedQty} != contents of live packages ${l.inPackages}`);
+  }
+  const twoOpen = await prisma.$queryRaw<{ orderId: string }[]>`
+    SELECT "orderId" FROM "PackingSession" WHERE "status"::text = 'OPEN' GROUP BY "orderId" HAVING count(*) > 1`;
+  if (twoOpen.length) throw new Error("more than one open packing session for an order");
+  const badItems = await prisma.packageItem.count({ where: { quantity: { lte: 0 } } });
+  if (badItems) throw new Error("package item with a non-positive quantity");
+}

@@ -146,3 +146,7 @@ Implemented in `src/modules/inventory` (operations) and `src/modules/catalog` (p
 Only the inventory module touches `InventoryBalance`; picking supplies the domain updates (tasks, order lines, statuses) as a callback that runs inside the same transaction. On an idempotent replay the callback is not run again.
 
 **Concurrency.** Lock order across modules: `Wave → Order → PickTask → Reservation → InventoryBalance → OrderLine updates` (see `docs/picking.md`). Standalone inventory operations lock `Reservation → Balance` / balances by position id, a suffix of that order, so they cannot deadlock with picking.
+
+## Packing and inventory (Phase 5)
+
+Packing does **not** consume or move stock: by the time an item reaches packing its stock was already consumed by the picking transaction (`PICK`). The packing module never reads or writes `InventoryBalance`, `InventoryMovement`, `InventoryOperation` or `Reservation`, and creates no movement for corrections, cancellations or completions. Tests snapshot all of those tables before and after full, cancelled, failed and concurrent packing runs and require them to be byte-identical.

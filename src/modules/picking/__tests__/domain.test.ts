@@ -44,15 +44,17 @@ describe("order lifecycle helpers", () => {
     expect(deriveFulfilmentStatus([line(5, 5, 5), line(2, 2, 2)])).toBe("PICKED");
   });
 
-  it("only legal transitions are allowed; PICKED and CANCELLED are final", () => {
+  it("only legal transitions are allowed; PACKED and CANCELLED are final; PICKED only continues into packing", () => {
     expect(canTransition("DRAFT", "READY")).toBe(true);
     expect(canTransition("READY", "ALLOCATED")).toBe(true);
     expect(canTransition("DRAFT", "ALLOCATED")).toBe(false);
     expect(canTransition("READY", "PICKING")).toBe(false);
     expect(canTransition("ALLOCATED", "PICKING")).toBe(true);
     for (const to of ORDER_STATUSES) {
-      expect(canTransition("PICKED", to)).toBe(false);
       expect(canTransition("CANCELLED", to)).toBe(false);
+      expect(canTransition("PACKED", to)).toBe(false);
+      // PICKED is final for picking; the only way on is a packing session (Phase 5)
+      expect(canTransition("PICKED", to)).toBe(to === "PACKING");
     }
     expect(ALLOCATABLE_STATUSES).toEqual(["READY", "PARTIALLY_ALLOCATED", "PICKING"]);
   });

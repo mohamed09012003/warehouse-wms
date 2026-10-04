@@ -86,3 +86,8 @@ Organization ─┬─ Membership ── User            (users are global; memb
 - **PickTask**: PENDING → IN_PROGRESS → COMPLETED, or CANCELLED.
 - **Reservation** gains CONSUMED (all lines consumed by picking); a task is backed by exactly one reservation line. Packing, shipping and order integrations are still design-only.
 Invariants added: `requested ≥ allocated ≥ picked ≥ 0` per order line; `0 ≤ pickedQty ≤ quantity` per task; stock leaves the ledger only through a `PICK` movement tied to a reservation.
+
+## Implemented in Phase 5
+
+`PackingSession`, `Package`, `PackageItem` (plus the `PackingEvent` audit log). Lifecycles (detail in `docs/packing.md`): **PackingSession** OPEN → COMPLETED | CANCELLED; **Package** OPEN → COMPLETED | CANCELLED; **Order** … PICKED → PACKING → PACKED (a partially picked order can be packed for what is picked but stays PICKING). The `PackingStation`, `Label` and shipping entities from the original design are not implemented.
+Invariants added: `packedQty ≤ pickedQty` per order line (and equals the contents of live packages); one OPEN session per order; completed packages and sessions are immutable; packing never changes inventory.

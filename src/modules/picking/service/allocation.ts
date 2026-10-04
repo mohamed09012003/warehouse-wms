@@ -121,6 +121,10 @@ async function stopOrderWork(
     if (mode === "cancel" && !CANCELLABLE_STATUSES.includes(locked.status)) {
       throw new InvalidStateError(`An order that is ${locked.status} cannot be cancelled`);
     }
+    // Packing is recorded work on picked goods: it must be cancelled (or completed) first.
+    if (mode === "cancel" && (await pk.hasOpenPackingSession(orderId))) {
+      throw new InvalidStateError("This order has an open packing session. Cancel or complete the packing session first.");
+    }
 
     const now = await pk.taskIdsOfOrder(orderId);
     const lockedWaveIds = new Set(waves.map((w) => w.id));

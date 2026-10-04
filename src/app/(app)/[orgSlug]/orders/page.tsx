@@ -12,7 +12,7 @@ import { StatusBadge } from "@/ui/shared/StatusBadge";
 export const metadata = { title: "Orders · WMS" };
 
 const ALLOCATION_LABEL = { NONE: "Not allocated", PARTIAL: "Partially allocated", FULL: "Fully allocated" } as const;
-const STATUSES = ["DRAFT", "READY", "PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "CANCELLED"];
+const STATUSES = ["DRAFT", "READY", "PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "PACKING", "PACKED", "CANCELLED"];
 
 export default async function OrdersPage({
   params,
@@ -68,6 +68,7 @@ export default async function OrdersPage({
                     <th className="py-2 pr-4 text-right">Requested</th>
                     <th className="py-2 pr-4 text-right">Allocated</th>
                     <th className="py-2 pr-4 text-right">Picked</th>
+                    <th className="py-2 pr-4 text-right">Packed</th>
                     <th className="py-2 pr-4">Allocation</th>
                     <th className="py-2">Created</th>
                   </tr>
@@ -87,6 +88,7 @@ export default async function OrdersPage({
                       <td className="py-2 pr-4 text-right">{o.requestedTotal}</td>
                       <td className="py-2 pr-4 text-right">{o.allocatedTotal}</td>
                       <td className="py-2 pr-4 text-right">{o.pickedTotal}</td>
+                      <td className="py-2 pr-4 text-right">{o.packedTotal}</td>
                       <td className="py-2 pr-4">{o.status === "DRAFT" || o.status === "CANCELLED" ? "—" : ALLOCATION_LABEL[o.allocationState]}</td>
                       <td className="py-2 whitespace-nowrap">{o.createdAt.slice(0, 16).replace("T", " ")}</td>
                     </tr>

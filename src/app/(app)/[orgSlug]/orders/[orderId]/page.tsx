@@ -38,6 +38,11 @@ export default async function OrderPage({ params }: { params: Promise<{ orgSlug:
           Order <span className="font-mono">{order.orderNumber}</span>
         </h1>
         <StatusBadge status={order.status} />
+        {order.pickedTotal > 0 && (
+          <Link href={`/${orgSlug}/packing`} className="text-sm underline-offset-4 hover:underline">
+            Packing →
+          </Link>
+        )}
       </div>
 
       <Card>
@@ -49,7 +54,7 @@ export default async function OrderPage({ params }: { params: Promise<{ orgSlug:
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 text-sm sm:grid-cols-4">
+          <div className="grid gap-3 text-sm sm:grid-cols-5">
             <div>
               <div className="text-muted-foreground">Allocation</div>
               <div className="font-medium" data-testid="allocation-state">
@@ -67,6 +72,10 @@ export default async function OrderPage({ params }: { params: Promise<{ orgSlug:
             <div>
               <div className="text-muted-foreground">Picked</div>
               <div className="font-medium">{order.pickedTotal}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Packed</div>
+              <div className="font-medium" data-testid="order-packed-total">{order.packedTotal}</div>
             </div>
           </div>
           <OrderActions
@@ -93,6 +102,7 @@ export default async function OrderPage({ params }: { params: Promise<{ orgSlug:
                 <th className="py-2 pr-4 text-right">Requested</th>
                 <th className="py-2 pr-4 text-right">Allocated</th>
                 <th className="py-2 pr-4 text-right">Picked</th>
+                <th className="py-2 pr-4 text-right">Packed</th>
                 <th className="py-2 text-right">Not allocated</th>
               </tr>
             </thead>
@@ -106,6 +116,7 @@ export default async function OrderPage({ params }: { params: Promise<{ orgSlug:
                   <td className="py-2 pr-4 text-right" data-col="requested">{l.requestedQty}</td>
                   <td className="py-2 pr-4 text-right" data-col="allocated">{l.allocatedQty}</td>
                   <td className="py-2 pr-4 text-right" data-col="picked">{l.pickedQty}</td>
+                  <td className="py-2 pr-4 text-right" data-col="packed">{l.packedQty}</td>
                   <td className="py-2 text-right" data-col="unallocated">{l.unallocatedQty}</td>
                 </tr>
               ))}

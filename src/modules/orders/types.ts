@@ -10,6 +10,7 @@ export interface OrderSummaryDto {
   requestedTotal: number;
   allocatedTotal: number;
   pickedTotal: number;
+  packedTotal: number;
   /** NONE, PARTIAL or FULL. FULL only when every line is fully allocated. */
   allocationState: AllocationState;
   createdAt: string;
@@ -24,6 +25,7 @@ export interface OrderLineDto {
   requestedQty: number;
   allocatedQty: number;
   pickedQty: number;
+  packedQty: number;
   /** requested - allocated: still waiting for stock. */
   unallocatedQty: number;
 }

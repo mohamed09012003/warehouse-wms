@@ -86,6 +86,8 @@ export function pickingRepo(ctx: TenantContext, db: DbClient = prisma) {
     // ---- reads ---------------------------------------------------------------------------
 
     findOrder: (id: string) => db.order.findFirst({ where: { ...org, id }, select: { id: true, orderNumber: true, status: true } }),
+    /** True while a packing session is open for the order (read-only; packing owns that table). */
+    hasOpenPackingSession: async (orderId: string) => (await db.packingSession.count({ where: { ...org, orderId, status: "OPEN" } })) > 0,
     taskIdsOfOrder: (orderId: string) => db.pickTask.findMany({ where: { ...org, orderId }, select: { id: true, waveId: true, status: true } }),
     taskIdsOfWave: (waveId: string) => db.pickTask.findMany({ where: { ...org, waveId }, select: { id: true, orderId: true, status: true } }),
     findTask: (id: string) => db.pickTask.findFirst({ where: { ...org, id } }),

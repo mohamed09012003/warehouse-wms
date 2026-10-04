@@ -31,6 +31,6 @@ export const createOrderSchema = z.object({
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 
 export const listOrdersSchema = z.object({
-  status: z.enum(["DRAFT", "READY", "PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "CANCELLED"]).optional(),
+  status: z.enum(["DRAFT", "READY", "PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "PACKING", "PACKED", "CANCELLED"]).optional(),
   search: z.string().trim().max(60).optional(),
 });

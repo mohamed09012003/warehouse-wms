@@ -19,6 +19,7 @@ export function toSummary(o: OrderRow): OrderSummaryDto {
     requestedTotal: sum((l) => l.requestedQty),
     allocatedTotal: sum((l) => l.allocatedQty),
     pickedTotal: sum((l) => l.pickedQty),
+    packedTotal: sum((l) => l.packedQty),
     allocationState: allocationState(o.lines),
     createdAt: o.createdAt.toISOString(),
   };
@@ -37,6 +38,7 @@ export function toDetail(o: OrderRow): OrderDetailDto {
       requestedQty: l.requestedQty,
       allocatedQty: l.allocatedQty,
       pickedQty: l.pickedQty,
+      packedQty: l.packedQty,
       unallocatedQty: l.requestedQty - l.allocatedQty,
     })),
   };

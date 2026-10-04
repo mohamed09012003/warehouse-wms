@@ -17,6 +17,7 @@ export type ErrorCode =
   | "WRONG_PRODUCT"
   | "TASK_NOT_PICKABLE"
   | "PICK_QUANTITY_EXCEEDED"
+  | "PACK_QUANTITY_EXCEEDED"
   | "DATABASE_ERROR"
   | "INTERNAL_ERROR";
 
@@ -135,6 +136,13 @@ export class TaskNotPickableError extends AppError {
 export class PickQuantityError extends AppError {
   constructor(message = "Quantity exceeds what remains to pick", details?: unknown) {
     super("PICK_QUANTITY_EXCEEDED", 422, message, details);
+  }
+}
+
+/** The quantity exceeds the picked-but-unpacked quantity of the order line. */
+export class PackQuantityError extends AppError {
+  constructor(message = "Quantity exceeds what remains to pack", details?: unknown) {
+    super("PACK_QUANTITY_EXCEEDED", 422, message, details);
   }
 }
 

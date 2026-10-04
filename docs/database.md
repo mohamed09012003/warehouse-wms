@@ -146,3 +146,15 @@ Tables: `Order`, `OrderLine`, `PickingWave`, `PickTask`; enums `OrderStatus` (DR
 - **`InventoryMovement_shape_check`** replaced (adds PICK, `ELSE false`). **`ReservationLine_consumed_check`**: `0 <= consumedQuantity <= quantity`.
 - **Enum values in one migration**: `ALTER TYPE … ADD VALUE` cannot be *used* in the same transaction, so the new constraints compare enum columns through `::text` and never mention PICK/CONSUMED as enum literals; application code uses them only after the migration commits.
 - The migration adds `orders.view/manage` and `picking.view/manage` to the existing built-in roles (nothing is removed).
+
+## Implemented in Phase 5 (migration `packing`)
+
+Tables: `PackingSession`, `Package`, `PackageItem`, `PackingEvent`, `IdempotencyRecord`; enums `PackingSessionStatus`, `PackageStatus` (OPEN, COMPLETED, CANCELLED), `PackingEventType`. `OrderStatus` gains `PACKING` and `PACKED`; `OrderLine` gains `packedQty`. None of these tables references any inventory table.
+
+- **Tenancy**: every table has `organizationId`; all references are composite FKs. `Package(organizationId, sessionId, orderId)` → `PackingSession(organizationId, id, orderId)` (a package's order is its session's order); `PackageItem(organizationId, packageId, orderId)` → `Package(organizationId, id, orderId)` and `PackageItem(organizationId, orderId, orderLineId, productId)` → `OrderLine(organizationId, orderId, id, productId)` (the line belongs to the same order and the product is the line's product). New uniques on `OrderLine`: `(organizationId, orderId, id, productId)`.
+- **One open session per order**: `CREATE UNIQUE INDEX "PackingSession_one_open_per_order_idx" ON "PackingSession" ("orderId") WHERE "status" = 'OPEN'`.
+- **Core invariant**: `CHECK ("packedQty" >= 0 AND "packedQty" <= "pickedQty")` on `OrderLine` (the cross-row sum is held by the guarded `packedQty` counter).
+- **Package**: `unique(orderId, packageNumber)`; CHECK positive integer measures when present (`weightG`, `lengthMm`, `widthMm`, `heightMm`), dimensions all-or-none, `packageType` ≤ 40 chars; `COMPLETED ⇒ completedAt`, `CANCELLED ⇒ cancelledAt`. **PackageItem**: `unique(packageId, orderLineId)`, CHECK `0 < quantity <= 100000000`. **PackingSession**: status/timestamp CHECK.
+- **PackingEvent**: append-only (trigger `PackingEvent_append_only`). **IdempotencyRecord**: `unique(organizationId, scope, key)`, generic and reusable.
+- Indexes: package/session by status and session, items by order line and product, sessions by order.
+- The migration adds `packing.view`/`packing.manage` to the built-in roles (nothing removed). `ALTER TYPE … ADD VALUE` for the new order statuses is not used in the same migration.

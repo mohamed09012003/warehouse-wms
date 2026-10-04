@@ -35,6 +35,8 @@ model Organization {
   reservations        Reservation[]
   orders              Order[]
   pickingWaves        PickingWave[]
+  packingSessions     PackingSession[]
+  idempotencyRecords  IdempotencyRecord[]
 }
 
 // Users are GLOBAL identities (not tenant-owned). Access to an organization is via Membership.
@@ -47,11 +49,15 @@ model User {
   createdAt    DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
 
-  memberships         Membership[]
-  inventoryOperations InventoryOperation[]
-  reservations        Reservation[]
-  orders              Order[]
-  pickingWaves        PickingWave[]
+  memberships              Membership[]
+  inventoryOperations      InventoryOperation[]
+  reservations             Reservation[]
+  orders                   Order[]
+  pickingWaves             PickingWave[]
+  packingSessionsStarted   PackingSession[]     @relation("PackingSessionStartedBy")
+  packingSessionsCompleted PackingSession[]     @relation("PackingSessionCompletedBy")
+  packagesCompleted        Package[]            @relation("PackageCompletedBy")
+  packingEvents            PackingEvent[]       @relation("PackingEventActor")
 }
 
 // Roles are per-organization. Permission NAMES are defined in code
@@ -301,6 +307,7 @@ model Product {
   reservationLines ReservationLine[]
   orderLines       OrderLine[]
   pickTasks        PickTask[]
+  packageItems     PackageItem[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, sku])
@@ -453,6 +460,10 @@ enum OrderStatus {
   ALLOCATED
   PICKING
   PICKED
+  // A packing session is open for a fully picked order.
+  PACKING
+  // Every requested unit is picked AND packed (final).
+  PACKED
   CANCELLED
 }
 
@@ -484,10 +495,12 @@ model Order {
   createdAt       DateTime    @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime    @updatedAt @db.Timestamptz(3)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  createdBy    User?        @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
-  lines        OrderLine[]
-  tasks        PickTask[]
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy       User?            @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  lines           OrderLine[]
+  tasks           PickTask[]
+  packingSessions PackingSession[]
+  packages        Package[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, orderNumber])
@@ -505,15 +518,19 @@ model OrderLine {
   // Quantity reserved for this line and not released. Outstanding reservation = allocatedQty - pickedQty.
   allocatedQty   Int    @default(0)
   pickedQty      Int    @default(0)
+  // Picked quantity placed in packages (open or completed). Invariant: packedQty <= pickedQty (CHECK).
+  packedQty      Int    @default(0)
 
-  order   Order      @relation(fields: [organizationId, orderId], references: [organizationId, id], onDelete: Restrict)
-  product Product    @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
-  tasks   PickTask[]
+  order        Order         @relation(fields: [organizationId, orderId], references: [organizationId, id], onDelete: Restrict)
+  product      Product       @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  tasks        PickTask[]
+  packageItems PackageItem[]
 
   @@unique([orderId, lineNo])
   // One line per product per order keeps allocation and reporting unambiguous.
   @@unique([orderId, productId])
   @@unique([organizationId, id])
+  @@unique([organizationId, orderId, id, productId])
   @@index([organizationId, productId])
 }
 
@@ -579,4 +596,159 @@ model PickTask {
   @@index([orderLineId])
   @@index([organizationId, productId])
   @@index([positionId])
+}
+
+// ---------------------------------------------------------------------------
+// Packing (Phase 5). See docs/packing.md.
+// Picking already CONSUMED the stock; packing only records which picked quantities went into which
+// packages. Nothing here references InventoryBalance, InventoryMovement or Reservation.
+// The key invariant packedQty <= pickedQty is held by OrderLine.packedQty (guarded updates + CHECK).
+// ---------------------------------------------------------------------------
+
+enum PackingSessionStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+enum PackageStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+enum PackingEventType {
+  SESSION_STARTED
+  PACKAGE_CREATED
+  PACKAGE_UPDATED
+  ITEM_ADDED
+  ITEM_CHANGED
+  ITEM_REMOVED
+  PACKAGE_COMPLETED
+  PACKAGE_CANCELLED
+  SESSION_COMPLETED
+  SESSION_CANCELLED
+}
+
+// A worker packing one order. At most ONE open session per order (partial unique index in the migration).
+model PackingSession {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String               @db.Uuid
+  orderId           String               @db.Uuid
+  status            PackingSessionStatus @default(OPEN)
+  startedByUserId   String?              @db.Uuid
+  completedByUserId String?              @db.Uuid
+  startedAt         DateTime             @default(now()) @db.Timestamptz(3)
+  completedAt       DateTime?            @db.Timestamptz(3)
+  cancelledAt       DateTime?            @db.Timestamptz(3)
+  createdAt         DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime             @updatedAt @db.Timestamptz(3)
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  order        Order          @relation(fields: [organizationId, orderId], references: [organizationId, id], onDelete: Restrict)
+  startedBy    User?          @relation("PackingSessionStartedBy", fields: [startedByUserId], references: [id], onDelete: Restrict)
+  completedBy  User?          @relation("PackingSessionCompletedBy", fields: [completedByUserId], references: [id], onDelete: Restrict)
+  packages     Package[]
+  events       PackingEvent[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, id, orderId])
+  @@index([organizationId, status])
+  @@index([orderId])
+}
+
+// A physical package. Numbered 1, 2, 3 ... per ORDER (cancelled packages keep their number).
+// Weight in grams, dimensions in millimetres (integers).
+model Package {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String        @db.Uuid
+  sessionId         String        @db.Uuid
+  orderId           String        @db.Uuid
+  packageNumber     Int
+  status            PackageStatus @default(OPEN)
+  packageType       String?
+  weightG           Int?
+  lengthMm          Int?
+  widthMm           Int?
+  heightMm          Int?
+  completedByUserId String?       @db.Uuid
+  completedAt       DateTime?     @db.Timestamptz(3)
+  cancelledAt       DateTime?     @db.Timestamptz(3)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+
+  // (organizationId, sessionId, orderId): the package's order is the session's order.
+  session     PackingSession @relation(fields: [organizationId, sessionId, orderId], references: [organizationId, id, orderId], onDelete: Restrict)
+  order       Order          @relation(fields: [organizationId, orderId], references: [organizationId, id], onDelete: Restrict)
+  completedBy User?          @relation("PackageCompletedBy", fields: [completedByUserId], references: [id], onDelete: Restrict)
+  items       PackageItem[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, id, orderId])
+  @@unique([orderId, packageNumber])
+  @@index([organizationId, status])
+  @@index([sessionId])
+}
+
+// Picked quantity of one order line placed in one package. One row per (package, order line);
+// adding more of the same line increases the quantity.
+model PackageItem {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  packageId      String   @db.Uuid
+  orderId        String   @db.Uuid
+  orderLineId    String   @db.Uuid
+  productId      String   @db.Uuid
+  quantity       Int
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  // The package and the order line must belong to the SAME order, and the product must be the line's product.
+  package   Package   @relation(fields: [organizationId, packageId, orderId], references: [organizationId, id, orderId], onDelete: Restrict)
+  orderLine OrderLine @relation(fields: [organizationId, orderId, orderLineId, productId], references: [organizationId, orderId, id, productId], onDelete: Restrict)
+  product   Product   @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, id])
+  @@unique([packageId, orderLineId])
+  @@index([orderLineId])
+  @@index([organizationId, productId])
+}
+
+// Append-only audit trail of packing actions (trigger in the migration forbids UPDATE/DELETE).
+model PackingEvent {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @db.Uuid
+  sessionId      String           @db.Uuid
+  type           PackingEventType
+  packageId      String?          @db.Uuid
+  orderLineId    String?          @db.Uuid
+  productId      String?          @db.Uuid
+  quantityDelta  Int?
+  quantityAfter  Int?
+  detail         String?
+  actorUserId    String?          @db.Uuid
+  createdAt      DateTime         @default(now()) @db.Timestamptz(3)
+
+  session PackingSession @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Restrict)
+  actor   User?          @relation("PackingEventActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, sessionId, createdAt])
+  @@index([packageId])
+}
+
+// Generic idempotency record: a repeated request (same scope + key + same request) is answered
+// from the stored record instead of being applied twice. Used by packing now; reusable later.
+model IdempotencyRecord {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  scope          String
+  key            String
+  requestHash    String
+  resourceType   String?
+  resourceId     String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, scope, key])
 }

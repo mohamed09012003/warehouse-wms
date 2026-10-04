@@ -125,7 +125,7 @@ export async function cancelWave(ctx: TenantContext, raw: unknown): Promise<Wave
     await pk.transitionWave(waveId, ["DRAFT", "RELEASED", "IN_PROGRESS"], "CANCELLED", "cancelledAt");
     for (const order of orders) {
       // Orders already CANCELLED or PICKED keep their final status.
-      if (orderIds.has(order.id) && order.status !== "CANCELLED" && order.status !== "PICKED") {
+      if (orderIds.has(order.id) && order.status !== "CANCELLED" && order.status !== "PICKED" && order.status !== "PACKING" && order.status !== "PACKED") {
         await pk.setOrderStatus(order.id, deriveFulfilmentStatus(await pk.orderLines(order.id)));
       }
     }

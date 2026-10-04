@@ -5,12 +5,15 @@
 //     │                │   ╲──allocate──▶ ALLOCATED ◀──────────┘
 //     │                │                      │
 //     │                │         first pick   ▼
-//     │                │                  PICKING ──all lines fully picked──▶ PICKED
+//     │                │                  PICKING ──all lines fully picked──▶ PICKED ──start packing──▶ PACKING ──every unit packed──▶ PACKED
 //     └──cancel────────┴──────────cancel (any non-final status)──────────────▶ CANCELLED
 //
 // Releasing an allocation (or cancelling a wave) returns the order to READY / PARTIALLY_ALLOCATED /
-// ALLOCATED according to what is still reserved. PICKED and CANCELLED are final.
-export const ORDER_STATUSES = ["DRAFT", "READY", "PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "CANCELLED"] as const;
+// ALLOCATED according to what is still reserved. PACKING exists only while a packing session is open
+// on a FULLY picked order (cancelling the session returns it to PICKED). A PARTIALLY picked order can
+// be packed too, but its status stays PICKING: it becomes PACKED only when every requested unit is
+// picked AND packed. PACKED and CANCELLED are final; PICKED is final for picking (packing follows).
+export const ORDER_STATUSES = ["DRAFT", "READY", "PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "PACKING", "PACKED", "CANCELLED"] as const;
 export type OrderStatusName = (typeof ORDER_STATUSES)[number];
 
 export interface LineQuantities {
@@ -47,8 +50,10 @@ const TRANSITIONS: Record<OrderStatusName, readonly OrderStatusName[]> = {
   READY: ["PARTIALLY_ALLOCATED", "ALLOCATED", "CANCELLED"],
   PARTIALLY_ALLOCATED: ["PARTIALLY_ALLOCATED", "ALLOCATED", "READY", "PICKING", "CANCELLED"],
   ALLOCATED: ["READY", "PARTIALLY_ALLOCATED", "PICKING", "CANCELLED"],
-  PICKING: ["PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "CANCELLED"],
-  PICKED: [],
+  PICKING: ["PARTIALLY_ALLOCATED", "ALLOCATED", "PICKING", "PICKED", "PACKING", "CANCELLED"],
+  PICKED: ["PACKING"],
+  PACKING: ["PICKED", "PACKED"],
+  PACKED: [],
   CANCELLED: [],
 };
 

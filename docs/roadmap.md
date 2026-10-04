@@ -9,8 +9,8 @@ Rules (from CLAUDE.md): each phase is implemented, tested, reviewed and committe
 | 2 | Warehouse structure + visual designer (floor plan, racks/levels/bays/positions, rack elevation, pallet types) | Done |
 | 3 | Catalog + inventory core (products, barcodes, balances, movements, receive/move/adjust, reservations) | **Implemented — awaiting review** |
 | 4 | (Merged into Phase 2 by request; the designer is done.) | |
-| 5 | Orders + picking (called "Phase 4" in conversation: the old Phase 4 was merged into Phase 2) | **Implemented — awaiting review** |
-| 6 | Packing + labels | |
+| 5 | Orders + picking (called "Phase 4" in conversation: the old Phase 4 was merged into Phase 2) | Done |
+| 6 | Packing (called "Phase 5" in conversation); labels are deferred | **Implemented — awaiting review** |
 | 7 | REST API, API keys, outbox, webhooks | |
 | 8 | CSV import/export, scheduled sync, first adapters | |
 | 9 | Hardening: RLS, performance, reporting, ops | |
@@ -106,3 +106,15 @@ Scope: internal orders (manual entry), allocation/reservation through the invent
 - **For packing (next)**: picked stock is consumed from the ledger at pick time and there is no staging position yet, so packing must either add a staging location step (pick = MOVE to staging, pack = consume) or work from `PickTask.pickedQty` / `OrderLine.pickedQty`. Decide this deliberately before building packing. `PICKED` is the hand-off status.
 - **Dangerous operations to know**: `cancelWave` / `cancelOrder` release reservations (stock becomes allocatable again immediately); pick confirmation consumes stock irreversibly (undo = a new `ADJUSTMENT_IN`/`RECEIVE`, there is no un-pick); the position-deletion guard (Phase 3) protects positions with pending picks because reserved stock is > 0.
 - **Lock order** (`Wave → Order → PickTask → Reservation → Balance`) is a rule for every new multi-row flow; see `docs/picking.md`.
+
+## Phase 5 (packing) implementation notes
+
+Scope: packing sessions, packages (integer grams / millimetres), package contents, picked-vs-packed invariant, order statuses PACKING/PACKED, permissions, UI (queue, session page), audit trail, generic idempotency, tests. Not included: shipping, labels, carrier APIs/rates, dimensional weight, package-type catalog, scanner hardware, packing stations.
+
+- **Packing does not touch inventory.** This supersedes the Phase 0 sketch (staging position + `PACK` movement). Picking consumed the stock; packing records `pickedQty → package contents`. A test scans the packing module for any reference to inventory.
+- **Invariant held in the database**: `OrderLine.packedQty` with CHECK `packedQty ≤ pickedQty` and guarded updates; partial unique index for one open session per order.
+- **Partial picking**: packable for what is picked; the order stays PICKING and becomes PACKED only after every requested unit is picked and packed (documented in `docs/packing.md`).
+- **Cancellation**: cancelling a session never reverses picking or inventory; refused once a package is completed (immutable). An order with an open session cannot be cancelled.
+- **Lock order** extended: `Wave → Order → PackingSession → Package → PickTask → Reservation → Balance → OrderLine updates`.
+- **Idempotency**: the new generic `IdempotencyRecord` table is reusable (Phase 6 integrations).
+- **For the next phase (integrations/shipping)**: `PACKED` is the hand-off status; completed packages (number, weight g, dimensions mm, contents) are the shipment data. There is no "reopen package" workflow, no labels, and no shipping status yet.

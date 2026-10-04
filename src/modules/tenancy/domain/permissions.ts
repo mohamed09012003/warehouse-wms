@@ -20,6 +20,9 @@ export const PERMISSIONS = [
   "picking.view",
   // allocate, manage waves, confirm picks
   "picking.manage",
+  "packing.view",
+  // start/cancel/complete packing sessions, manage packages and their contents
+  "packing.manage",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -47,11 +50,13 @@ export const DEFAULT_ROLES: ReadonlyArray<{ name: string; permissions: readonly 
       "orders.manage",
       "picking.view",
       "picking.manage",
+      "packing.view",
+      "packing.manage",
     ],
   },
   {
     name: "Member",
-    permissions: ["org.read", "warehouse.view", "products.view", "inventory.view", "orders.view", "picking.view"],
+    permissions: ["org.read", "warehouse.view", "products.view", "inventory.view", "orders.view", "picking.view", "packing.view"],
   },
 ];
 

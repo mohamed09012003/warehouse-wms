@@ -96,8 +96,11 @@ export async function confirmPick(ctx: TenantContext, raw: unknown): Promise<Pic
         throw new PickQuantityError("This would pick more than was allocated for the order line.");
       }
 
-      const status = deriveFulfilmentStatus(await pk.orderLines(order.id));
-      await pk.setOrderStatus(order.id, status);
+      // A packing session opened while the order was only partly picked: once the last unit is picked
+      // the order is being packed, not merely PICKED.
+      let status: string = deriveFulfilmentStatus(await pk.orderLines(order.id));
+      if (status === "PICKED" && (await pk.hasOpenPackingSession(order.id))) status = "PACKING";
+      await pk.setOrderStatus(order.id, status as Parameters<typeof pk.setOrderStatus>[1]);
 
       // Wave: completed automatically when its last open task is done.
       let waveStatus = wave.status as string;
