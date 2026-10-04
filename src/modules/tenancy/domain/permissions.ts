@@ -23,6 +23,9 @@ export const PERMISSIONS = [
   "packing.view",
   // start/cancel/complete packing sessions, manage packages and their contents
   "packing.manage",
+  "integrations.view",
+  // create/edit/enable integrations, write secrets, replay events (changing grants is Owner-only)
+  "integrations.manage",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -52,6 +55,8 @@ export const DEFAULT_ROLES: ReadonlyArray<{ name: string; permissions: readonly 
       "picking.manage",
       "packing.view",
       "packing.manage",
+      "integrations.view",
+      "integrations.manage",
     ],
   },
   {

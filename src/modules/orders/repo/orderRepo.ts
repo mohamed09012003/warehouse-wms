@@ -23,6 +23,8 @@ export function orderRepo(ctx: TenantContext, db: DbClient = prisma) {
         include,
       }),
     findById: (id: string) => db.order.findFirst({ where: { ...org, id }, include }),
+    findByOrderNumber: (orderNumber: string) =>
+      db.order.findFirst({ where: { ...org, orderNumber }, select: { id: true, orderNumber: true, externalRef: true, status: true } }),
     create: async (data: {
       orderNumber: string;
       status: OrderStatus;

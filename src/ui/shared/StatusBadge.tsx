@@ -17,6 +17,16 @@ const VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline
   IN_PROGRESS: "default",
   COMPLETED: "default",
   PENDING: "outline",
+  // integrations
+  HEALTHY: "default",
+  DEGRADED: "secondary",
+  FAILING: "destructive",
+  RECEIVED: "outline",
+  PROCESSING: "secondary",
+  SUCCEEDED: "default",
+  FAILED: "destructive",
+  REJECTED: "destructive",
+  DEAD: "destructive",
 };
 
 /** Human-readable status chip for orders, waves and pick tasks. */

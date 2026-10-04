@@ -8,6 +8,7 @@
 //            session already has a completed package (those are immutable). The order returns from
 //            PACKING to PICKED. Picking and inventory are never touched.
 import { ConflictError, InvalidStateError, NotFoundError, parseInput } from "@/lib/errors";
+import { lineSummaries, orderPayload, recordEvent } from "@/modules/outbox";
 import { requirePermission, type TenantContext } from "@/modules/tenancy";
 import { allPickedIsPacked, orderFullyPacked, startBlocker, totals } from "../domain/progress";
 import { packingRepo } from "../repo/packingRepo";
@@ -78,7 +79,27 @@ export async function completePacking(ctx: TenantContext, raw: unknown): Promise
 
       if ((await repo.closeSession(sessionId, "COMPLETED")) === 0) throw new ConflictError("The packing session changed while completing; please retry.");
       // The order is PACKED only when EVERY requested unit is picked and packed.
-      if (orderFullyPacked(lines)) await repo.setOrderStatus(session.orderId, ["PACKING", "PICKED", "PICKING"], "PACKED");
+      if (orderFullyPacked(lines)) {
+        await repo.setOrderStatus(session.orderId, ["PACKING", "PICKED", "PICKING"], "PACKED");
+        // Shipment-ready data: every completed package of the order (all sessions), in the same transaction.
+        const packages = await repo.completedPackagesOfOrder(session.orderId);
+        await recordEvent(tx, ctx, {
+          type: "order.packed",
+          payload: orderPayload(order, {
+            status: "PACKED",
+            lines: lineSummaries(lines),
+            packages: packages.map((p) => ({
+              packageNumber: p.packageNumber,
+              packageType: p.packageType,
+              weightG: p.weightG,
+              lengthMm: p.lengthMm,
+              widthMm: p.widthMm,
+              heightMm: p.heightMm,
+              items: p.items.map((i) => ({ sku: i.product.sku, quantity: i.quantity })),
+            })),
+          }),
+        });
+      }
       await repo.recordEvent({
         sessionId,
         type: "SESSION_COMPLETED",

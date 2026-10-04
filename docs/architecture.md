@@ -36,9 +36,10 @@ Rules: UI never touches Prisma or business rules. Domain code is pure (no I/O) a
 | `orders` | Orders and order lines (WMS-side representation) |
 | `picking` | Waves, allocation, pick tasks, short picks |
 | `packing` | Packing sessions, packages, labels |
-| `integrations` | Adapters, webhooks, import/export, sync (outside the core; depends on core ports) |
+| `outbox` | Domain events written by core services in their own transactions (`recordEvent`). Knows nothing about providers (Phase 6) |
+| `integrations` | *Not a module in `src/modules`*: the layer in `src/integrations/` (adapters, signed webhooks, secrets vault, worker). Outside the core; depends on core public APIs, never the reverse (Phase 6; CSV, SQL and ERP adapters are deferred) |
 
-Dependency direction: `integrations → (all)`; `packing → picking → inventory → warehouse/catalog → tenancy`. Lower modules never import higher ones.
+Dependency direction: `integrations → (all, through public APIs)`; `packing → picking → inventory → warehouse/catalog → tenancy`; `orders/picking/packing → outbox → tenancy`. Lower modules never import higher ones, and **no module or `server/` code imports `src/integrations`** (ESLint `no-restricted-imports` plus a source-scan test).
 
 ## Multi-tenancy (summary; details in database.md)
 
@@ -61,8 +62,8 @@ Roles are per-organization and map to a code-defined list of permission strings 
 - **Transactions**: `withTransaction(ctx, fn)` helper wraps Prisma `$transaction`, sets tenant session variable, and retries on serialization/deadlock errors (see inventory.md).
 - **Config**: `server/env.ts` parses `process.env` with Zod; the app fails fast on missing config.
 - **Audit**: inventory movements are the audit ledger for stock. A general `AuditLog` (who changed config like racks/roles) is added for non-inventory entities when needed.
-- **Eventing**: a transactional **outbox** table (`OutboxEvent`) records domain events (e.g. `inventory.changed`, `order.shipped`) in the same transaction as the change. A worker later dispatches them to webhooks/integrations. No message broker initially.
-- **Background work**: needed for webhooks, scheduled sync, imports. Initially a simple DB-backed job runner (`Job` table, `FOR UPDATE SKIP LOCKED`) triggered by a separate Node process or cron-hit route; no new infra. Revisit only if load requires.
+- **Eventing** (Phase 6): a transactional **outbox** (`OutboxEvent`, written only through `modules/outbox` `recordEvent(tx, ctx, event)`) records `order.created`, `order.allocated`, `order.picked`, `order.packed` and `order.cancelled` in the same transaction as the change; none is written on rollback or idempotent replay. The integrations worker fans events out to `IntegrationDelivery` rows and delivers them. No message broker. `inventory.changed` is deferred.
+- **Background work** (Phase 6): a PostgreSQL-backed worker (`npm run worker`; `runOnce()` in tests) claims `InboundEvent` and `IntegrationDelivery` rows with `FOR UPDATE SKIP LOCKED` and a 60 s lease. Those two tables carry their own state machines (status, attempts, `nextAttemptAt`, lease), so **no generic `Job` table exists yet**: it is deferred until scheduled sync, CSV or SQL imports need it. No new infrastructure.
 - **Observability**: structured logging with request id + organizationId. No PII or secrets in logs.
 
 ## Folder structure
@@ -82,27 +83,30 @@ warehouse-wms/
 │  │  │   ├─ warehouses/ ├─ products/ ├─ inventory/ ├─ orders/ ├─ picking/ ├─ packing/ └─ settings/
 │  │  ├─ pick/                # mobile picking PWA-style routes (later)
 │  │  └─ api/
-│  │      ├─ v1/              # public REST API (API-key/OAuth auth), versioned
+│  │      ├─ v1/              # public REST API (API-key/OAuth auth), versioned: DEFERRED
 │  │      ├─ internal/        # session-authed endpoints for the app
-│  │      └─ webhooks/        # inbound webhooks from external systems
+│  │      └─ webhooks/        # inbound signed webhooks: /api/webhooks/[publicId] (Phase 6)
 │  ├─ ui/                     # presentation only
 │  │  ├─ primitives/          # shadcn/ui components (generated)
 │  │  ├─ shared/              # tables, forms, layout
 │  │  └─ features/            # warehouse-designer/, rack-elevation/, picking-mobile/ ...
 │  ├─ modules/                # business logic, one folder per bounded context
-│  │  └─ <module>/            # tenancy, identity, catalog, warehouse, inventory, orders, picking, packing
+│  │  └─ <module>/            # tenancy, identity, catalog, warehouse, inventory, orders, picking, packing, outbox
 │  │      ├─ domain/          # pure logic + types (no Prisma, no React)
 │  │      ├─ service/         # use cases, transactions, permission checks
 │  │      ├─ repo/            # Prisma access, tenant-scoped
 │  │      ├─ schemas/         # Zod
 │  │      ├─ __tests__/
 │  │      └─ index.ts         # the module's public API
-│  ├─ integrations/           # outside the core
-│  │  ├─ core/                # ports, adapter registry, mapping, sync runner, outbox dispatcher
-│  │  ├─ rest/                # REST API helpers (auth, pagination, idempotency)
-│  │  ├─ webhooks/            # signing, delivery, retry
-│  │  ├─ csv/                 # import/export
-│  │  └─ adapters/            # erp-*/ecommerce-*/sql-* (added per customer need)
+│  ├─ integrations/           # outside the core (Phase 6)
+│  │  ├─ core/                # ports, provider registry, retry policy, health, grants, error classification, safe logger
+│  │  ├─ adapters/            # generic-webhook (Phase 6); erp-*/ecommerce-*/sql-* are deferred, added per customer need
+│  │  ├─ secrets/             # AES-256-GCM vault + the single decryption boundary (secretStore)
+│  │  ├─ http/                # SafeHttpClient (SSRF policy, pinned connections, no redirects)
+│  │  ├─ repo/                # all Prisma access of the layer
+│  │  ├─ service/             # admin services, webhook ingestion, inbound/outbound processors, fan-out
+│  │  └─ worker/              # runOnce() and the loop behind `npm run worker`
+│  │  (rest/ API-key helpers and csv/ import-export are deferred)
 │  ├─ server/                 # infrastructure shared by modules
 │  │  ├─ db/                  # Prisma client, withTransaction, tenant session
 │  │  ├─ auth/                # session, tenant context
@@ -126,7 +130,7 @@ Note: the user's requested separation maps as — UI: `ui/` + `app/`; applicatio
 | 5 | Balance table + append-only movement ledger | Fast reads and strict audit; balance is derived-verifiable from the ledger |
 | 6 | Conditional-UPDATE concurrency (no app locks) | Atomic, simple, scales; see inventory.md |
 | 7 | Layout stored as relational + numeric geometry | The designer renders from DB; no layout in code |
-| 8 | Integration layer behind ports + outbox | Core never couples to customer systems; reliable event delivery |
+| 8 | Integration layer behind ports + outbox | Core never couples to customer systems; reliable event delivery. Implemented in Phase 6 as a first slice: signed webhooks in both directions, outbox, durable worker; REST/API keys, CSV, SQL and vendor adapters deferred. Integrations act through a dedicated non-login service user with an allowlist of two grants (`products.manage`, `orders.manage`); secrets live only in an AES-256-GCM vault with tenant-bound AAD |
 | 9 | Prisma + hand-written SQL for constraints | Prisma lacks CHECK/partial index/RLS support; migrations remain the single schema history |
 | 10 | Integer mm / grams / base-unit quantities | No float drift; unambiguous units |
 
@@ -140,7 +144,8 @@ Note: the user's requested separation maps as — UI: `ui/` + `app/`; applicatio
 | Layout edits corrupt inventory | Positions are archived not deleted; layout changes validated against occupied positions |
 | Layout/capacity inconsistency | Capacity derived/validated from physical config in domain code, covered by unit tests |
 | Prisma limitations (CHECK, RLS, `FOR UPDATE`) | Documented raw SQL escape hatch in `server/db`, wrapped and tested |
-| Integration coupling/brittleness | Ports/adapters, external ID mapping table, idempotent inbound ops, outbox for outbound |
+| Integration coupling/brittleness | Ports/adapters, `ExternalRef` mapping table, idempotent inbound ops, outbox for outbound, source-scan tests that keep the core free of `integrations/` and the integration layer free of inventory/picking/packing tables |
+| Secret leakage / SSRF through integrations | Vault with AAD binding and a single decryption boundary, write-only secret API, redacted safe logging, `SafeHttpClient` address policy with pinned connections; canary-secret tests |
 | Scope creep / over-engineering | Phased roadmap, simplicity rule, each phase reviewed before the next |
 | Mobile scanning latency/offline | Scan validation is single small API calls; offline support explicitly deferred, noted as risk |
 | Large floor plans slow in browser | Layout loaded per warehouse as simple JSON; Konva layers/virtualization if needed |

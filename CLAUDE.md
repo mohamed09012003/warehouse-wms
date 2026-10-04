@@ -6,7 +6,7 @@ Read `/docs` before changing architecture. Start with `docs/architecture.md` and
 
 ## Current phase
 
-Phase 5 (packing) is implemented and awaiting review; Phases 0-4 are committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+Phase 6 (integration layer, first slice) is implemented and awaiting review; Phases 0-5 are committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md` (the phase numbers there are the actual project phases).
 
 Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/dist/docs/` before writing Next-specific code.
 
@@ -34,14 +34,28 @@ Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/
 - Package and item changes lock Session → Package; session lifecycle changes lock Order → Session (full order: Wave → Order → PackingSession → Package → PickTask → Reservation → Balance → OrderLine). Completed packages and sessions are immutable; one OPEN session per order (partial unique index).
 - All packing mutations go through `packingMutation` (one transaction, optional `Idempotency-Key` via `IdempotencyRecord`). Weight is integer grams, dimensions integer millimetres.
 
+## Integration rules (Phase 6)
+
+- **The core never imports `src/integrations/`** (ESLint rule + test). Core services publish domain events ONLY through `modules/outbox` `recordEvent(tx, ctx, event)`, inside the transaction of the business change: exactly one event per successful transition, none on rollback or idempotent replay. Core transactions never call external systems.
+- Integrations reach the core only through module public APIs (`@/modules/<x>`), as a dedicated non-login service user whose permissions are an allowlist: `products.manage` and `orders.manage` only. **Never grant `inventory.*`, `warehouse.*`, `picking.manage` or `packing.manage`** to an integration; the integration layer never touches inventory, reservation, pick or packing tables (a test scans for it). Changing grants is Owner-only.
+- **Secrets:** only in `IntegrationSecret` as AES-256-GCM ciphertext (AAD = organization + integration + name). `integrations/secrets/secretStore.ts` is the only code that reads that table or decrypts. Secrets are write-only through the API (metadata only on reads), never in `Integration.config`, logs, errors, `IntegrationLog`, events or the browser (a generated secret is shown once, client-side). Keys come from `INTEGRATION_ENCRYPTION_KEYS`; never commit them.
+- **All outbound network I/O goes through `SafeHttpClient`** (https in production, every resolved address public, connection pinned, no redirects, timeouts, size cap). No `fetch`/`axios`/`node:http` anywhere else in `src/integrations`.
+- Inbound: authenticate (HMAC signature, ±5 min), validate with Zod, **persist, return, process in the worker**: never run business logic inside the webhook request. Every inbound effect must be idempotent (event id + payload hash, `ExternalRef`, natural keys); permanent problems become `REJECTED`, transient ones retry with backoff, never retry forever.
+- Worker rows are claimed with `FOR UPDATE SKIP LOCKED` and a lease; every transition out of `PROCESSING` is guarded by `(status, attempts)`. Lock order: integration work rows first, then the core order. `IntegrationLog` is append-only and holds only ids, codes and short redacted summaries: no payloads, headers, response bodies or credentials.
+- Integration health is tracked **per direction** (`inbound*` / `outbound*` columns): inbound outcomes never touch outbound health, and only OUTBOUND failures can trip the circuit breaker (`outboundPausedAt`). Keep it that way.
+- Do not log raw error messages (`toErrorResponse` logs code, class and correlation id only). State-changing `tenantRoute` calls are same-origin checked.
+- Deferred, do not build without a new phase: REST `/api/v1`/API keys, OAuth, CSV, SQL connector, generic `Job` table, vendor adapters, `inventory.changed`, inbound inventory adjustments, rate limiting. See `docs/integrations.md`.
+
 ## Commands
 
 - `npm run dev` / `build` / `start`; `npm run lint`; `npm run typecheck`
+- `npm run worker` — integration worker loop (inbound processing, outbox fan-out, outbound delivery, retries); `npm run worker -- --once` for one pass. Needs `INTEGRATION_ENCRYPTION_KEYS`; uses whatever `DATABASE_URL` points at
+- `npm run fake-erp` — development-only fake ERP (http://127.0.0.1:4100) for manual end-to-end testing of the integration layer; see `tools/fake-erp/README.md`. It must stay independent of the WMS (no WMS imports, no WMS database)
 - `npm test` — vitest against `warehouse_wms_test` only (applies migrations to it first)
 - `npm run db:migrate -- --name <name>` — `prisma migrate dev` after verifying DATABASE_URL is `warehouse_wms`
 - `npm run db:migrate:test` — `migrate deploy` against the test database only
 - `npm run db:seed` — fake demo org/user in the dev database (prints a random password once)
-- Env: copy `.env.example` to `.env` (DATABASE_URL, TEST_DATABASE_URL, AUTH_SECRET)
+- Env: copy `.env.example` to `.env` (DATABASE_URL, TEST_DATABASE_URL, AUTH_SECRET; INTEGRATION_ENCRYPTION_KEYS to use integrations)
 
 ## Rules
 

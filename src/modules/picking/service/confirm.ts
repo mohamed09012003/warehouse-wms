@@ -20,6 +20,7 @@ import {
 import { resolveProductCode } from "@/modules/catalog";
 import { runStockOperation } from "@/modules/inventory";
 import { deriveFulfilmentStatus } from "@/modules/orders";
+import { lineSummaries, orderPayload, recordEvent } from "@/modules/outbox";
 import { requirePermission, type TenantContext } from "@/modules/tenancy";
 import { lookupPositions, resolvePositionCode } from "@/modules/warehouse";
 import { pickingRepo } from "../repo/pickingRepo";
@@ -98,9 +99,17 @@ export async function confirmPick(ctx: TenantContext, raw: unknown): Promise<Pic
 
       // A packing session opened while the order was only partly picked: once the last unit is picked
       // the order is being packed, not merely PICKED.
-      let status: string = deriveFulfilmentStatus(await pk.orderLines(order.id));
+      const linesAfter = await pk.orderLines(order.id);
+      let status: string = deriveFulfilmentStatus(linesAfter);
       if (status === "PICKED" && (await pk.hasOpenPackingSession(order.id))) status = "PACKING";
       await pk.setOrderStatus(order.id, status as Parameters<typeof pk.setOrderStatus>[1]);
+      // The pick that completes the order (every requested unit picked) is exactly one business transition.
+      if (status === "PICKED" || status === "PACKING") {
+        await recordEvent(tx, ctx, {
+          type: "order.picked",
+          payload: orderPayload(order, { status, pickedTotal: linesAfter.reduce((n, l) => n + l.pickedQty, 0), lines: lineSummaries(linesAfter) }),
+        });
+      }
 
       // Wave: completed automatically when its last open task is done.
       let waveStatus = wave.status as string;

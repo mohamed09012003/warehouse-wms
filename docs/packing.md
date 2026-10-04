@@ -92,3 +92,7 @@ OPEN ──complete──▶ COMPLETED (immutable)          OPEN ──cancel─
 - A cancelled session with completed packages is not possible (completed packages are immutable); there is no "reopen package" workflow yet.
 - No per-user packing assignment; any user with `packing.manage` can work any session.
 - Weight is optional and unchecked against product weights.
+
+## Domain events (Phase 6)
+
+`completePacking` publishes `order.packed` only when the order actually becomes PACKED (every requested unit picked and packed), in the same transaction. The payload lists **all completed packages of the order** (all sessions): package number, type, weight in grams, dimensions in millimetres and contents (SKU, quantity). Completing a session for a partially picked order publishes nothing. This is the shipment data a carrier/ERP integration consumes later; packing itself still never touches inventory. See `docs/integrations.md`.

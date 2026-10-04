@@ -193,12 +193,30 @@ export function normalizeError(error: unknown): AppError {
   return new AppError("INTERNAL_ERROR", 500, "Internal server error");
 }
 
-/** For route handlers: convert any thrown value into a JSON Response. */
+/**
+ * Log-safe description of an unexpected error: its class name and Prisma/SQL codes only.
+ * The error MESSAGE is never logged: Prisma and driver messages can contain SQL text and bound
+ * parameters (which may be credentials or ciphertext).
+ */
+export function safeErrorFields(error: unknown): { errorClass: string; prismaCode?: string; sqlState?: string } {
+  const code = (error as { code?: unknown } | null)?.code;
+  return {
+    errorClass: error instanceof Error ? error.name : typeof error,
+    ...(typeof code === "string" && /^P\d{4}$/.test(code) ? { prismaCode: code } : {}),
+    ...(sqlStateOf(error) ? { sqlState: sqlStateOf(error) } : {}),
+  };
+}
+
+/** For route handlers: convert any thrown value into a JSON Response. 5xx responses carry a correlation id that matches the (message-free) log line. */
 export function toErrorResponse(error: unknown): Response {
   const appError = normalizeError(error);
-  if (appError.status >= 500) console.error(appError.code, error instanceof Error ? error.message : "");
+  const serverError = appError.status >= 500;
+  const correlationId = serverError ? globalThis.crypto.randomUUID() : undefined;
+  if (serverError) {
+    console.error(JSON.stringify({ level: "error", event: "request.failed", code: appError.code, correlationId, ...safeErrorFields(error) }));
+  }
   return Response.json(
-    { error: { code: appError.code, message: appError.message, details: appError.details } },
+    { error: { code: appError.code, message: appError.message, details: appError.details, ...(correlationId ? { correlationId } : {}) } },
     { status: appError.status },
   );
 }

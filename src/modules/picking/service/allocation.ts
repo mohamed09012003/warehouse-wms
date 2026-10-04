@@ -7,6 +7,7 @@
 import { ConflictError, InsufficientStockError, InvalidStateError, NotFoundError, parseInput } from "@/lib/errors";
 import { runStockOperation } from "@/modules/inventory";
 import { ALLOCATABLE_STATUSES, CANCELLABLE_STATUSES, RELEASABLE_STATUSES, allocationState, deriveFulfilmentStatus } from "@/modules/orders";
+import { lineSummaries, orderPayload, recordEvent } from "@/modules/outbox";
 import { requirePermission, type TenantContext } from "@/modules/tenancy";
 import { withTransaction } from "@/server/db";
 import { planAllocation } from "../domain/allocation";
@@ -83,7 +84,22 @@ export async function allocateOrder(ctx: TenantContext, raw: unknown): Promise<A
       if (allocatedNow === 0) {
         throw new InsufficientStockError("No stock is available to allocate for this order. Nothing was reserved.", { orderId });
       }
-      await pk.setOrderStatus(orderId, deriveFulfilmentStatus(await pk.orderLines(orderId)));
+      const linesAfter = await pk.orderLines(orderId);
+      const statusAfter = deriveFulfilmentStatus(linesAfter);
+      await pk.setOrderStatus(orderId, statusAfter);
+      // One event per successful allocation step, in the same transaction (an idempotent replay never runs this).
+      await recordEvent(tx, ctx, {
+        type: "order.allocated",
+        payload: orderPayload(locked, {
+          status: statusAfter,
+          allocationState: allocationState(linesAfter),
+          allocatedNow,
+          tasksCreated,
+          requestedTotal: linesAfter.reduce((n, l) => n + l.requestedQty, 0),
+          allocatedTotal: linesAfter.reduce((n, l) => n + l.allocatedQty, 0),
+          lines: lineSummaries(linesAfter),
+        }),
+      });
       return { allocatedNow, tasksCreated };
     },
   );
@@ -144,6 +160,12 @@ async function stopOrderWork(
     if (mode === "cancel") await pk.setOrderStatus(orderId, "CANCELLED");
     else await refreshOrderStatus(pk, orderId);
     await completeWavesWithoutOpenTasks(pk, waves);
+    if (mode === "cancel") {
+      await recordEvent(tx, ctx, {
+        type: "order.cancelled",
+        payload: orderPayload(locked, { previousStatus: locked.status, tasksCancelled: cancelled, lines: lineSummaries(await pk.orderLines(orderId)) }),
+      });
+    }
     return { cancelled };
   };
 

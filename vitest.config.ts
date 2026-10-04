@@ -32,6 +32,10 @@ export default defineConfig(({ mode }) => {
         TEST_DATABASE_URL: testUrl,
         // Fixed fake value for tests only; not a real secret.
         AUTH_SECRET: "test-only-auth-secret-not-for-real-use-0123456789",
+        // Fixed fake vault keys for tests only (second key lets tests exercise key rotation); not real secrets.
+        INTEGRATION_ENCRYPTION_KEYS: `test1:${Buffer.from("test-only-fake-vault-key-numbr-1").toString("base64")},test0:${Buffer.from("test-only-fake-vault-key-numbr-0").toString("base64")}`,
+        // Tests run a local HTTP server as the "external system"; SSRF-policy tests build their own strict client.
+        INTEGRATIONS_ALLOW_PRIVATE_TARGETS: "true",
       },
     },
   };

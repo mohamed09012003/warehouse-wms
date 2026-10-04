@@ -29,9 +29,9 @@ export function packingRepo(ctx: TenantContext, db: DbClient = prisma) {
 
   return {
     // ---- locks ---------------------------------------------------------------------------
-    async lockOrder(id: string): Promise<{ id: string; status: OrderStatus; orderNumber: string } | null> {
-      const rows = await db.$queryRaw<{ id: string; status: OrderStatus; orderNumber: string }[]>`
-        SELECT "id", "status"::text AS "status", "orderNumber" FROM "Order"
+    async lockOrder(id: string): Promise<{ id: string; status: OrderStatus; orderNumber: string; externalRef: string | null } | null> {
+      const rows = await db.$queryRaw<{ id: string; status: OrderStatus; orderNumber: string; externalRef: string | null }[]>`
+        SELECT "id", "status"::text AS "status", "orderNumber", "externalRef" FROM "Order"
          WHERE "organizationId" = ${orgId}::uuid AND "id" = ${id}::uuid FOR UPDATE`;
       return rows[0] ?? null;
     },
@@ -71,6 +71,13 @@ export function packingRepo(ctx: TenantContext, db: DbClient = prisma) {
       }),
     countOpenPackages: (sessionId: string) => db.package.count({ where: { ...org, sessionId, status: "OPEN" } }),
     countCompletedPackages: (sessionId: string) => db.package.count({ where: { ...org, sessionId, status: "COMPLETED" } }),
+    /** Every completed package of an order (all sessions), for the order.packed event. */
+    completedPackagesOfOrder: (orderId: string) =>
+      db.package.findMany({
+        where: { ...org, orderId, status: "COMPLETED" },
+        orderBy: { packageNumber: "asc" },
+        include: { items: { orderBy: { orderLineId: "asc" }, include: { product: { select: { sku: true } } } } },
+      }),
     openPackagesOfSession: (sessionId: string) =>
       db.package.findMany({ where: { ...org, sessionId, status: "OPEN" }, include: { items: true }, orderBy: { packageNumber: "asc" } }),
     itemsOfPackage: (packageId: string) => db.packageItem.findMany({ where: { ...org, packageId }, orderBy: { id: "asc" } }),

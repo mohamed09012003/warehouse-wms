@@ -20,6 +20,7 @@ export interface LockedOrder {
   id: string;
   status: OrderStatus;
   orderNumber: string;
+  externalRef: string | null;
 }
 export interface LockedTask {
   id: string;
@@ -62,7 +63,7 @@ export function pickingRepo(ctx: TenantContext, db: DbClient = prisma) {
       const out: LockedOrder[] = [];
       for (const id of sorted) {
         const rows = await db.$queryRaw<LockedOrder[]>`
-          SELECT "id", "status"::text AS "status", "orderNumber" FROM "Order"
+          SELECT "id", "status"::text AS "status", "orderNumber", "externalRef" FROM "Order"
            WHERE "organizationId" = ${orgId}::uuid AND "id" = ${id}::uuid FOR UPDATE`;
         if (rows[0]) out.push(rows[0]);
       }

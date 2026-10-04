@@ -43,3 +43,6 @@ next-env.d.ts
 
 # generated Prisma client
 /src/generated/
+
+# fake ERP (development tool): local data file
+/tools/fake-erp/data/

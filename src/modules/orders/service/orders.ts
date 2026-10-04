@@ -1,6 +1,8 @@
 import { ConflictError, InvalidStateError, NotFoundError, ValidationError, parseInput } from "@/lib/errors";
 import { lookupProducts } from "@/modules/catalog";
+import { lineSummaries, orderPayload, recordEvent } from "@/modules/outbox";
 import { requirePermission, type TenantContext } from "@/modules/tenancy";
+import { withTransaction, type DbClient, type Tx } from "@/server/db";
 import { allocationState } from "../domain/status";
 import { orderRepo } from "../repo/orderRepo";
 import { createOrderSchema, listOrdersSchema } from "../schemas";
@@ -57,8 +59,21 @@ export async function getOrder(ctx: TenantContext, id: string): Promise<OrderDet
   return toDetail(order);
 }
 
-/** Create an internal order (manual entry). Products must belong to the organization and be active. */
-export async function createOrder(ctx: TenantContext, raw: unknown): Promise<OrderDetailDto> {
+/**
+ * Internal lookup by order number (normalized to uppercase) for other layers (integrations).
+ * Tenant-scoped; performs no permission check: callers check their own.
+ */
+export async function findOrderByNumber(ctx: TenantContext, orderNumber: string, db?: DbClient) {
+  return orderRepo(ctx, db).findByOrderNumber(orderNumber.trim().toUpperCase());
+}
+
+/**
+ * Create an internal order (manual entry or from an integration). Products must belong to the
+ * organization and be active. The order and its `order.created` outbox event are written in ONE
+ * transaction: pass `opts.tx` to make the order part of a larger transaction (an inbound event
+ * handler writes its external reference in the same transaction); otherwise it opens its own.
+ */
+export async function createOrder(ctx: TenantContext, raw: unknown, opts: { tx?: Tx } = {}): Promise<OrderDetailDto> {
   requirePermission(ctx, "orders.manage");
   const input = parseInput(createOrderSchema, raw);
 
@@ -69,19 +84,33 @@ export async function createOrder(ctx: TenantContext, raw: unknown): Promise<Ord
     if (!p.active) throw new ValidationError(`Product ${p.sku} is disabled`);
   }
 
-  try {
-    const order = await orderRepo(ctx).create({
-      orderNumber: input.orderNumber,
-      status: input.ready ? "READY" : "DRAFT",
-      externalRef: input.externalRef ?? null,
-      note: input.note ?? null,
-      lines: input.lines,
+  const run = async (tx: Tx): Promise<OrderDetailDto> => {
+    const repo = orderRepo(ctx, tx);
+    let order;
+    try {
+      order = await repo.create({
+        orderNumber: input.orderNumber,
+        status: input.ready ? "READY" : "DRAFT",
+        externalRef: input.externalRef ?? null,
+        note: input.note ?? null,
+        lines: input.lines,
+      });
+    } catch (error) {
+      if ((error as { code?: unknown })?.code === "P2002") throw new ConflictError(`Order number "${input.orderNumber}" already exists`);
+      throw error;
+    }
+    const created = await repo.findById(order.id);
+    if (!created) throw new NotFoundError("Order not found");
+    await recordEvent(tx, ctx, {
+      type: "order.created",
+      payload: orderPayload(
+        { id: created.id, orderNumber: created.orderNumber, externalRef: created.externalRef },
+        { status: created.status, lines: lineSummaries(created.lines) },
+      ),
     });
-    return getOrder(ctx, order.id);
-  } catch (error) {
-    if ((error as { code?: unknown })?.code === "P2002") throw new ConflictError(`Order number "${input.orderNumber}" already exists`);
-    throw error;
-  }
+    return toDetail(created);
+  };
+  return opts.tx ? run(opts.tx) : withTransaction(run);
 }
 
 /** DRAFT -> READY: the order may now be allocated. */

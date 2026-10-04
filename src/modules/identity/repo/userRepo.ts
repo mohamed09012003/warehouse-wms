@@ -11,7 +11,7 @@ export function findUserById(id: string, db: DbClient = prisma) {
 }
 
 export function insertUser(
-  data: { email: string; name: string; passwordHash: string },
+  data: { email: string; name: string; passwordHash: string; disabledAt?: Date },
   db: DbClient = prisma,
 ) {
   return db.user.create({ data });

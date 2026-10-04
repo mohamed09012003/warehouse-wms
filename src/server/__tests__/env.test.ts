@@ -29,4 +29,30 @@ describe("environment validation", () => {
       expect((error as Error).message).not.toContain("tooshort-secret");
     }
   });
+
+  describe("integration vault keys", () => {
+    const key = Buffer.from("0123456789abcdef0123456789abcdef").toString("base64");
+    it("is optional, accepts a valid keyring and an empty value", () => {
+      expect(parseEnv(good).INTEGRATION_ENCRYPTION_KEYS).toBeUndefined();
+      expect(parseEnv({ ...good, INTEGRATION_ENCRYPTION_KEYS: "" }).INTEGRATION_ENCRYPTION_KEYS).toBe("");
+      expect(parseEnv({ ...good, INTEGRATION_ENCRYPTION_KEYS: "k1:" + key + ",k0:" + key }).INTEGRATION_ENCRYPTION_KEYS).toContain("k1:");
+    });
+
+    it("rejects malformed keys without echoing them", () => {
+      const bad = "k1:" + Buffer.from("too-short-key-material").toString("base64");
+      try {
+        parseEnv({ ...good, INTEGRATION_ENCRYPTION_KEYS: bad });
+        expect.unreachable();
+      } catch (error) {
+        expect((error as Error).message).toMatch(/INTEGRATION_ENCRYPTION_KEYS/);
+        expect((error as Error).message).not.toContain(Buffer.from("too-short-key-material").toString("base64"));
+      }
+      expect(() => parseEnv({ ...good, INTEGRATION_ENCRYPTION_KEYS: "nonsense" })).toThrow(/INTEGRATION_ENCRYPTION_KEYS/);
+    });
+
+    it("only accepts true/false for the private-target override", () => {
+      expect(parseEnv({ ...good, INTEGRATIONS_ALLOW_PRIVATE_TARGETS: "true" }).INTEGRATIONS_ALLOW_PRIVATE_TARGETS).toBe("true");
+      expect(() => parseEnv({ ...good, INTEGRATIONS_ALLOW_PRIVATE_TARGETS: "yes" })).toThrow(/INTEGRATIONS_ALLOW_PRIVATE_TARGETS/);
+    });
+  });
 });

@@ -16,7 +16,8 @@ Organization ─┬─ Membership ── User            (users are global; memb
               ├─ Order ── OrderLine
               ├─ PickingWave ── PickTask
               ├─ PackingSession ── Package ── PackageItem
-              └─ Integration ── (credentials, mappings, webhook endpoints, sync runs, jobs)
+              ├─ OutboxEvent                                (domain events from core transactions)
+              └─ Integration ── (secrets, ExternalRef, InboundEvent, IntegrationDelivery, IntegrationLog)
 ```
 
 ## Entities
@@ -54,8 +55,9 @@ Organization ─┬─ Membership ── User            (users are global; memb
 - **Package / PackageItem** — a physical parcel and the quantities of products in it, with weight/dimensions and label data.
 
 ### Integrations (see integrations.md)
-- **Integration** — a configured connection to an external system (type, status, encrypted credentials ref).
-- Supporting: `ExternalRef` (internal ID ↔ external ID), `WebhookEndpoint`/`WebhookDelivery`, `ImportJob`, `SyncRun`, `ApiKey`, `OutboxEvent`, `Job`.
+- **Integration** (Phase 6) — a configured connection to an external system: provider, direction flags, non-secret config, grants, a dedicated non-login service user, health. Secrets live only in `IntegrationSecret` (AES-256-GCM).
+- Implemented supporting entities: `ExternalRef` (external ID ↔ Product/Order), `InboundEvent`, `OutboxEvent` (domain events written by core services in their own transactions), `IntegrationDelivery`, `IntegrationLog`.
+- Deferred: `ImportJob`, `SyncRun`, `ApiKey`, `Job` (generic), warehouse/location mapping.
 
 ## Lifecycles
 

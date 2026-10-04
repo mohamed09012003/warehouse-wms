@@ -6,6 +6,7 @@ import "server-only";
 import { ValidationError, toErrorResponse } from "@/lib/errors";
 import type { TenantContext } from "@/modules/tenancy";
 import { requireTenantContext } from "@/server/auth/session";
+import { assertSameOrigin } from "./sameOrigin";
 
 type Params = Record<string, string>;
 type RouteContext<P extends Params> = { params: Promise<{ orgSlug: string } & P> };
@@ -15,6 +16,7 @@ export function tenantRoute<P extends Params = Params>(
 ) {
   return async (request: Request, route: RouteContext<P>): Promise<Response> => {
     try {
+      assertSameOrigin(request);
       const { orgSlug, ...params } = await route.params;
       const ctx = await requireTenantContext(orgSlug);
       const result = await handler({ ctx, request, params: params as unknown as P });

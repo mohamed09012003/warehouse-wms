@@ -1,7 +1,8 @@
-import { ConflictError, NotFoundError, parseInput } from "@/lib/errors";
+import { ConflictError, NotFoundError, ValidationError, parseInput } from "@/lib/errors";
 import { requirePermission, type TenantContext } from "@/modules/tenancy";
+import { withTransaction, type Tx } from "@/server/db";
 import { productRepo } from "../repo/productRepo";
-import { addBarcodeSchema, createProductSchema, listProductsSchema, updateProductSchema } from "../schemas";
+import { addBarcodeSchema, createProductSchema, listProductsSchema, updateProductSchema, upsertProductSchema } from "../schemas";
 
 export interface ProductDto {
   id: string;
@@ -63,6 +64,69 @@ export async function updateProduct(ctx: TenantContext, id: string, raw: unknown
   const { count } = await productRepo(ctx).update(id, input);
   if (count === 0) throw new NotFoundError("Product not found");
   return getProduct(ctx, id);
+}
+
+/**
+ * Create or update a product by SKU, adding any missing barcodes (barcodes are never removed here).
+ * Used by integrations. `opts.productId` names a product already known through an external
+ * reference: its SKU must then match (SKUs are immutable). Runs in `opts.tx` when given, so the caller
+ * can commit it together with other writes; otherwise in its own transaction.
+ */
+export async function upsertProduct(
+  ctx: TenantContext,
+  raw: unknown,
+  opts: { tx?: Tx; productId?: string } = {},
+): Promise<{ product: ProductDetailDto; created: boolean }> {
+  requirePermission(ctx, "products.manage");
+  const input = parseInput(upsertProductSchema, raw);
+
+  const run = async (tx: Tx) => {
+    const repo = productRepo(ctx, tx);
+    let existing = opts.productId ? await repo.findById(opts.productId) : await repo.findBySku(input.sku);
+    if (opts.productId && !existing) throw new NotFoundError("Product not found");
+    if (existing && existing.sku !== input.sku) {
+      throw new ValidationError(`SKU cannot change: the product is ${existing.sku}, the request says ${input.sku}`);
+    }
+    let created = false;
+    if (!existing) {
+      try {
+        await repo.create({ sku: input.sku, name: input.name, description: input.description ?? null });
+      } catch (error) {
+        if (isUniqueViolation(error)) throw new ConflictError(`SKU "${input.sku}" was created concurrently; retry`);
+        throw error;
+      }
+      existing = await repo.findBySku(input.sku);
+      created = true;
+    } else if (existing.name !== input.name || (input.description !== undefined && (input.description ?? null) !== existing.description)) {
+      await repo.update(existing.id, { name: input.name, ...(input.description !== undefined ? { description: input.description ?? null } : {}) });
+    }
+    if (!existing) throw new NotFoundError("Product not found");
+
+    const have = new Set(existing.barcodes.map((b) => b.barcode));
+    for (const barcode of new Set(input.barcodes ?? [])) {
+      if (have.has(barcode)) continue;
+      const owner = await repo.findBarcodeOwner(barcode);
+      if (owner && owner.productId !== existing.id) throw new ValidationError(`Barcode "${barcode}" is already assigned to another product`);
+      try {
+        await repo.addBarcode(existing.id, barcode);
+      } catch (error) {
+        if (isUniqueViolation(error)) throw new ConflictError(`Barcode "${barcode}" was assigned concurrently; retry`);
+        throw error;
+      }
+    }
+    const p = await repo.findById(existing.id);
+    if (!p) throw new NotFoundError("Product not found");
+    const product: ProductDetailDto = {
+      id: p.id,
+      sku: p.sku,
+      name: p.name,
+      description: p.description,
+      active: p.active,
+      barcodes: p.barcodes.map((b) => ({ id: b.id, barcode: b.barcode })),
+    };
+    return { product, created };
+  };
+  return opts.tx ? run(opts.tx) : withTransaction(run);
 }
 
 export async function addBarcode(ctx: TenantContext, productId: string, raw: unknown): Promise<ProductDetailDto> {

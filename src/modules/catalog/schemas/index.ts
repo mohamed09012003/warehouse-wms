@@ -35,6 +35,15 @@ export const updateProductSchema = z
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 export type UpdateProductInput = z.infer<typeof updateProductSchema>;
 
+// Create-or-update by SKU (used by integrations). Barcodes are ADD-ONLY: missing ones are added, none are removed.
+export const upsertProductSchema = z.object({
+  sku: skuSchema,
+  name: z.string().trim().min(1, "Name is required").max(200),
+  description: z.string().trim().max(2000).nullish(),
+  barcodes: z.array(barcodeSchema).max(50).optional(),
+});
+export type UpsertProductInput = z.infer<typeof upsertProductSchema>;
+
 export const addBarcodeSchema = z.object({ barcode: barcodeSchema });
 
 export const listProductsSchema = z.object({

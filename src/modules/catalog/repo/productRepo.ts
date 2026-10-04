@@ -32,6 +32,9 @@ export function productRepo(ctx: TenantContext, db: DbClient = prisma) {
         where: { ...org, OR: [{ sku: code.toUpperCase() }, { barcodes: { some: { barcode: code } } }] },
         select: { id: true, sku: true },
       }),
+    findBySku: (sku: string) => db.product.findFirst({ where: { ...org, sku }, include: { barcodes: { orderBy: { createdAt: "asc" } } } }),
+    /** The product a barcode is assigned to in this organization, if any. */
+    findBarcodeOwner: (barcode: string) => db.productBarcode.findFirst({ where: { ...org, barcode }, select: { productId: true } }),
     findManyByIds: (ids: string[]) => db.product.findMany({ where: { ...org, id: { in: ids } } }),
     create: (data: { sku: string; name: string; description: string | null }) =>
       db.product.create({ data: { ...data, organizationId: ctx.organizationId } }),

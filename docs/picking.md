@@ -116,3 +116,7 @@ On success, atomically: the reservation line's `consumedQuantity` increases (res
 - Confirming the last pick while a packing session is open on the (until then partially picked) order turns it `PACKING`, not `PICKED`.
 - An order with an open packing session cannot be cancelled until the session is cancelled or completed; `PACKING` and `PACKED` orders are not cancellable.
 - Picking never overwrites `PACKING`/`PACKED`, and `OrderLine.packedQty ≤ pickedQty` means picked quantity is never decreased.
+
+## Domain events (Phase 6)
+
+Allocation, the pick that completes an order, and cancellation each write one outbox event in the same transaction: `order.allocated` (every successful allocation step), `order.picked` (the confirmation that makes every requested unit picked; status `PICKED`, or `PACKING` if a packing session is open) and `order.cancelled` (with `previousStatus`). A rolled-back operation or an idempotent replay writes none. Releasing an allocation publishes nothing. See `docs/integrations.md`.

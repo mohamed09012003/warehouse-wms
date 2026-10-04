@@ -88,7 +88,7 @@ A `Position` row stores denormalized structure numbers? **No** — structure com
 | Label | id, org, packageId, format, payload/blobRef, createdAt | |
 
 ### Integrations / platform
-`Integration`, `IntegrationCredential` (encrypted blob + key id), `ExternalRef(org, integrationId, entityType, internalId, externalId)` unique(org, integrationId, entityType, externalId), `WebhookEndpoint`, `WebhookDelivery`, `ImportJob`, `SyncRun`, `OutboxEvent`, `Job`, `AuditLog`. See integrations.md.
+**Implemented in Phase 6** (see [Phase 6 — Integrations](#phase-6--integrations) below): `Integration`, `IntegrationSecret` (replaces the sketched `IntegrationCredential`), `ExternalRef` (typed FK columns instead of a polymorphic `internalId`), `InboundEvent`, `OutboxEvent`, `IntegrationDelivery` (replaces `WebhookDelivery`), `IntegrationLog`. **Still only a design / deferred:** `ImportJob`, `SyncRun`, `Job`, `ApiKey`, `AuditLog`. See integrations.md.
 
 ## Constraints that need hand-written SQL
 
@@ -158,3 +158,28 @@ Tables: `PackingSession`, `Package`, `PackageItem`, `PackingEvent`, `Idempotency
 - **PackingEvent**: append-only (trigger `PackingEvent_append_only`). **IdempotencyRecord**: `unique(organizationId, scope, key)`, generic and reusable.
 - Indexes: package/session by status and session, items by order line and product, sessions by order.
 - The migration adds `packing.view`/`packing.manage` to the built-in roles (nothing removed). `ALTER TYPE … ADD VALUE` for the new order statuses is not used in the same migration.
+
+## Phase 6 — Integrations
+
+Migration `20261006100000_integrations` (additive: seven new tables and six enums; **no existing table or data is changed** except that `integrations.view` / `integrations.manage` are appended to the built-in Owner and Admin roles). Tables: `Integration`, `IntegrationSecret`, `ExternalRef`, `InboundEvent`, `OutboxEvent`, `IntegrationDelivery`, `IntegrationLog`; enums `IntegrationHealth`, `IntegrationSecretSlot`, `ExternalEntityType`, `InboundEventStatus`, `IntegrationDeliveryStatus`, `IntegrationDirection`. See `docs/integrations.md` for behaviour.
+
+- **Tenancy**: every table has `organizationId`; every reference is a composite FK `(organizationId, …)`. `ExternalRef` uses **typed nullable FK columns** (`productId`, `orderId`) instead of a polymorphic id so the tenant-enforcing FKs still apply; MATCH SIMPLE leaves the unused column unchecked, and a CHECK requires exactly one to be set and to match `entityType`. Tests attempt every cross-tenant reference.
+- **`Integration`**: `publicId` globally unique (22–64 URL-safe characters, `^[A-Za-z0-9_-]{22,64}$`); `unique(organizationId, name)`; `provider` is a code-defined identifier; `config` is non-secret JSON; `grants text[]` with CHECK `grants <@ ARRAY['products.manage','orders.manage']` (the database also refuses any other permission); CHECK `NOT (enabled AND archivedAt IS NOT NULL)` (an archived integration can never process events); `serviceUserId` → `User` (RESTRICT). Health columns, **one set per direction**: `inboundHealthStatus`, `inboundLastSuccessAt`, `inboundLastFailureAt`, `inboundConsecutiveFailures`, `inboundLastErrorSummary` and the same five with the `outbound` prefix (see migration `integration_health_split` below), plus `outboundPausedAt` (circuit breaker, driven by the outbound counter only).
+- **`IntegrationSecret`**: `unique(integrationId, name, slot)`; `ciphertext` bytea, `iv` (CHECK 12 bytes), `authTag` (CHECK 16 bytes), `keyId`, `rotatedAt`. Written and read only by `integrations/secrets/secretStore.ts`. Never selected by any other query.
+- **`ExternalRef`**: `unique(integrationId, entityType, externalId)`, `unique(integrationId, productId)`, `unique(integrationId, orderId)` (NULLs never collide).
+- **`InboundEvent`**: `unique(organizationId, integrationId, externalEventId)`; `payloadHash` (sha-256 hex), `payload` jsonb with CHECK `octet_length(payload::text) <= 262144`; status machine `RECEIVED → PROCESSING → SUCCEEDED | REJECTED | FAILED → … → DEAD`; CHECK that a lease (`lockedUntil`) exists exactly while `PROCESSING`; partial indexes `(nextAttemptAt) WHERE status IN ('RECEIVED','FAILED')` and `(lockedUntil) WHERE status = 'PROCESSING'` serve the worker's claim and reaper.
+- **`OutboxEvent`**: `seq` bigserial (observability only), `eventType` CHECK `^[a-z]+(\.[a-z_]+)+$`, `schemaVersion >= 1`, payload ≤ 256 KiB, `fannedOutAt`. **Trigger `OutboxEvent_immutable`**: every column except the one-time `fannedOutAt` marker is immutable. Partial indexes: `(seq) WHERE fannedOutAt IS NULL` (fan-out) and `(fannedOutAt) WHERE fannedOutAt IS NOT NULL` (purge). Rows are deleted only by the retention purge.
+- **`IntegrationDelivery`**: `unique(integrationId, outboxEventId)` (fan-out idempotency); same lease CHECK; `SUCCEEDED ⇒ deliveredAt`; partial indexes like `InboundEvent`.
+- **`IntegrationLog`**: **append-only** (trigger `IntegrationLog_append_only`, same pattern as the inventory ledger); CHECK on the status vocabulary, `char_length(safeSummary) <= 300`, non-negative attempt/duration. Event/delivery ids are plain ids (no FK) so retention of events and deliveries never touches the log. Like the inventory ledger the trigger does not stop `TRUNCATE` or a table owner (Phase 7).
+- **Claiming**: `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING …` with `attempts = attempts + 1` and `lockedUntil = now + 60 s`; every transition out of `PROCESSING` is a guarded `updateMany` on `(id, status, attempts)`.
+- **Lock order** (extends the documented one): `InboundEvent` / `IntegrationDelivery` row → (core flows: Wave → Order → PackingSession → Package → PickTask → Reservation → Balance → OrderLine). Core code never locks integration rows; its only contact with this layer is an `INSERT INTO "OutboxEvent"` in its own transaction.
+- **Not in the schema**: no `Job`, `SyncRun` or `ImportJob` table, no warehouse/location mapping, no status-mapping table, no API-key table.
+
+### Phase 6 correction: independent inbound/outbound health (migration `20261007100000_integration_health_split`)
+
+A new additive migration (the applied `20261006100000_integrations` is untouched). `Integration` originally had one combined health record; it now has one per direction:
+
+- The five existing columns are **renamed** to `inboundHealthStatus`, `inboundLastSuccessAt`, `inboundLastFailureAt`, `inboundConsecutiveFailures`, `inboundLastErrorSummary`; five new columns `outbound…` are added (defaults: `HEALTHY`, `NULL`, `NULL`, `0`, `NULL`).
+- Existing rows keep their data: an outbound-enabled integration's old values are copied to the outbound columns; an integration without inbound gets a clean inbound record.
+- `Integration_shape_check` is recreated with the new names: both counters `>= 0` and both summaries `<= 300` characters.
+- `outboundPausedAt` is unchanged. Only `recordOutboundFailure` can set it, and it reads only `outboundConsecutiveFailures`; inbound statements never touch an outbound column.

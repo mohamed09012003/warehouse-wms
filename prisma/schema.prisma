@@ -37,6 +37,8 @@ model Organization {
   pickingWaves        PickingWave[]
   packingSessions     PackingSession[]
   idempotencyRecords  IdempotencyRecord[]
+  integrations        Integration[]
+  outboxEvents        OutboxEvent[]
 }
 
 // Users are GLOBAL identities (not tenant-owned). Access to an organization is via Membership.
@@ -58,6 +60,7 @@ model User {
   packingSessionsCompleted PackingSession[]     @relation("PackingSessionCompletedBy")
   packagesCompleted        Package[]            @relation("PackageCompletedBy")
   packingEvents            PackingEvent[]       @relation("PackingEventActor")
+  integrationServiceUsers  Integration[]        @relation("IntegrationServiceUser")
 }
 
 // Roles are per-organization. Permission NAMES are defined in code
@@ -308,6 +311,7 @@ model Product {
   orderLines       OrderLine[]
   pickTasks        PickTask[]
   packageItems     PackageItem[]
+  externalRefs     ExternalRef[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, sku])
@@ -501,6 +505,7 @@ model Order {
   tasks           PickTask[]
   packingSessions PackingSession[]
   packages        Package[]
+  externalRefs    ExternalRef[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, orderNumber])
@@ -751,4 +756,247 @@ model IdempotencyRecord {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, scope, key])
+}
+
+// ---------------------------------------------------------------------------
+// Integrations (Phase 6). See docs/integrations.md.
+// External systems talk to the WMS through an adapter boundary. Nothing here is referenced by the
+// core domain except the `OutboxEvent` table (written by core services through modules/outbox).
+// Secrets live ONLY in IntegrationSecret (AES-256-GCM ciphertext); Integration.config never holds them.
+// ---------------------------------------------------------------------------
+
+enum IntegrationHealth {
+  HEALTHY
+  DEGRADED
+  FAILING
+}
+
+enum IntegrationSecretSlot {
+  CURRENT
+  PREVIOUS
+}
+
+enum ExternalEntityType {
+  PRODUCT
+  ORDER
+}
+
+enum InboundEventStatus {
+  RECEIVED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REJECTED
+  DEAD
+}
+
+enum IntegrationDeliveryStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  DEAD
+}
+
+enum IntegrationDirection {
+  INBOUND
+  OUTBOUND
+}
+
+model Integration {
+  id                          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId              String            @db.Uuid
+  // Unguessable lookup key used in the public webhook URL. The only way an external caller selects an integration.
+  publicId                    String            @unique
+  name                        String
+  // Code-defined adapter identifier, e.g. "generic-webhook".
+  provider                    String
+  inboundEnabled              Boolean           @default(false)
+  outboundEnabled             Boolean           @default(false)
+  enabled                     Boolean           @default(false)
+  disabledReason              String?
+  // Non-secret, provider-validated configuration (never credentials).
+  config                      Json              @default("{}")
+  // Permissions the integration actor may use (allowlisted in code).
+  grants                      String[]
+  // Dedicated non-login user: the actor recorded on everything the integration does.
+  serviceUserId               String            @db.Uuid
+  // Health is tracked per direction and independently: inbound outcomes never touch the outbound columns
+  // (and so never affect the circuit breaker) and vice versa.
+  inboundHealthStatus         IntegrationHealth @default(HEALTHY)
+  inboundLastSuccessAt        DateTime?         @db.Timestamptz(3)
+  inboundLastFailureAt        DateTime?         @db.Timestamptz(3)
+  inboundConsecutiveFailures  Int               @default(0)
+  inboundLastErrorSummary     String?
+  outboundHealthStatus        IntegrationHealth @default(HEALTHY)
+  outboundLastSuccessAt       DateTime?         @db.Timestamptz(3)
+  outboundLastFailureAt       DateTime?         @db.Timestamptz(3)
+  outboundConsecutiveFailures Int               @default(0)
+  outboundLastErrorSummary    String?
+  // Set by the circuit breaker (outbound failures only); outbound deliveries stay PENDING while paused.
+  outboundPausedAt            DateTime?         @db.Timestamptz(3)
+  archivedAt                  DateTime?         @db.Timestamptz(3)
+  createdAt                   DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt                   DateTime          @updatedAt @db.Timestamptz(3)
+
+  organization  Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  serviceUser   User                  @relation("IntegrationServiceUser", fields: [serviceUserId], references: [id], onDelete: Restrict)
+  secrets       IntegrationSecret[]
+  externalRefs  ExternalRef[]
+  inboundEvents InboundEvent[]
+  deliveries    IntegrationDelivery[]
+  logs          IntegrationLog[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, name])
+  @@index([organizationId, enabled])
+}
+
+model IntegrationSecret {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String                @db.Uuid
+  integrationId  String                @db.Uuid
+  name           String
+  slot           IntegrationSecretSlot
+  ciphertext     Bytes
+  iv             Bytes
+  authTag        Bytes
+  keyId          String
+  // When this value was set. A PREVIOUS value is honoured for a grace period after the CURRENT one's rotatedAt.
+  rotatedAt      DateTime              @default(now()) @db.Timestamptz(3)
+  createdAt      DateTime              @default(now()) @db.Timestamptz(3)
+
+  integration Integration @relation(fields: [organizationId, integrationId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([integrationId, name, slot])
+  @@index([organizationId, integrationId])
+}
+
+// Maps an external identifier to a WMS entity. Typed nullable FK columns (not a polymorphic id) so the
+// tenant-enforcing composite FKs still apply. Exactly one is set and it matches entityType (CHECK).
+model ExternalRef {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String             @db.Uuid
+  integrationId  String             @db.Uuid
+  entityType     ExternalEntityType
+  externalId     String
+  productId      String?            @db.Uuid
+  orderId        String?            @db.Uuid
+  createdAt      DateTime           @default(now()) @db.Timestamptz(3)
+
+  integration Integration @relation(fields: [organizationId, integrationId], references: [organizationId, id], onDelete: Restrict)
+  product     Product?    @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  order       Order?      @relation(fields: [organizationId, orderId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([integrationId, entityType, externalId])
+  // One external identity per WMS entity per integration (NULLs never collide).
+  @@unique([integrationId, productId])
+  @@unique([integrationId, orderId])
+  @@index([organizationId, productId])
+  @@index([organizationId, orderId])
+}
+
+model InboundEvent {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String             @db.Uuid
+  integrationId    String             @db.Uuid
+  externalEventId  String
+  eventType        String
+  occurredAt       DateTime           @db.Timestamptz(3)
+  // SHA-256 of the raw request body: same id + same hash = duplicate; same id + different hash = conflict.
+  payloadHash      String
+  // The validated envelope (size-capped by CHECK). Never copied into logs.
+  payload          Json
+  status           InboundEventStatus @default(RECEIVED)
+  attempts         Int                @default(0)
+  nextAttemptAt    DateTime           @default(now()) @db.Timestamptz(3)
+  lockedUntil      DateTime?          @db.Timestamptz(3)
+  resultType       String?
+  resultId         String?
+  lastErrorCode    String?
+  lastErrorSummary String?
+  correlationId    String
+  receivedAt       DateTime           @default(now()) @db.Timestamptz(3)
+  processedAt      DateTime?          @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
+
+  integration Integration @relation(fields: [organizationId, integrationId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, integrationId, externalEventId])
+  @@index([organizationId, integrationId, status])
+  @@index([organizationId, integrationId, receivedAt])
+}
+
+// Domain events written by core services in the SAME transaction as the business change.
+// Provider-agnostic: the worker fans them out to integrations. `seq` is for observability only.
+model OutboxEvent {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  seq            BigInt    @unique @default(autoincrement())
+  organizationId String    @db.Uuid
+  eventType      String
+  schemaVersion  Int       @default(1)
+  occurredAt     DateTime  @default(now()) @db.Timestamptz(3)
+  payload        Json
+  fannedOutAt    DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  deliveries   IntegrationDelivery[]
+
+  @@unique([organizationId, id])
+  @@index([organizationId, eventType])
+}
+
+model IntegrationDelivery {
+  id               String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String                    @db.Uuid
+  integrationId    String                    @db.Uuid
+  outboxEventId    String                    @db.Uuid
+  status           IntegrationDeliveryStatus @default(PENDING)
+  attempts         Int                       @default(0)
+  nextAttemptAt    DateTime                  @default(now()) @db.Timestamptz(3)
+  lockedUntil      DateTime?                 @db.Timestamptz(3)
+  lastHttpStatus   Int?
+  lastErrorCode    String?
+  lastErrorSummary String?
+  deliveredAt      DateTime?                 @db.Timestamptz(3)
+  createdAt        DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime                  @updatedAt @db.Timestamptz(3)
+
+  integration Integration @relation(fields: [organizationId, integrationId], references: [organizationId, id], onDelete: Restrict)
+  outboxEvent OutboxEvent @relation(fields: [organizationId, outboxEventId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, id])
+  // Fan-out is idempotent: one delivery per integration per event.
+  @@unique([integrationId, outboxEventId])
+  @@index([organizationId, integrationId, status])
+  @@index([outboxEventId])
+}
+
+// Append-only operational log (trigger). Holds safe summaries only: no credentials, no headers,
+// no remote response bodies, no payload copies. Event/delivery ids are plain ids (no FK) so the
+// retention purge of events/deliveries never touches the log.
+model IntegrationLog {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String               @db.Uuid
+  integrationId  String               @db.Uuid
+  direction      IntegrationDirection
+  provider       String
+  // Stable event id: the external event id (inbound) or the outbox event id (outbound).
+  eventId        String?
+  eventType      String?
+  inboundEventId String?              @db.Uuid
+  deliveryId     String?              @db.Uuid
+  correlationId  String
+  status         String
+  attempt        Int                  @default(0)
+  httpStatus     Int?
+  durationMs     Int?
+  safeSummary    String
+  createdAt      DateTime             @default(now()) @db.Timestamptz(3)
+
+  integration Integration @relation(fields: [organizationId, integrationId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([organizationId, integrationId, createdAt])
 }
