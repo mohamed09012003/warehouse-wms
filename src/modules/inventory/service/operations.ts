@@ -30,7 +30,7 @@ import type { InventoryMovementTypeName as InventoryMovementType, MovementDto, O
 
 type Movement = Awaited<ReturnType<InventoryRepo["movementsOfOperation"]>>[number];
 
-function toMovementDto(m: Movement): MovementDto {
+export function toMovementDto(m: Movement): MovementDto {
   return {
     id: m.id,
     operationId: m.operationId,
@@ -56,7 +56,7 @@ function hashRequest(type: string, request: unknown): string {
   return createHash("sha256").update(JSON.stringify([type, request])).digest("hex");
 }
 
-interface OperationSpec {
+export interface OperationSpec {
   type: InventoryMovementType;
   idempotencyKey?: string;
   /** The validated request without the idempotency key; used to detect key reuse with different data. */
@@ -72,7 +72,7 @@ interface OperationSpec {
  * return the movement rows to record. A replay (same key, same request) returns the original
  * result without applying anything again.
  */
-async function runOperation(
+export async function runOperation(
   ctx: TenantContext,
   spec: OperationSpec,
   apply: (repo: InventoryRepo, tx: Tx) => Promise<MovementRow[]>,
@@ -317,31 +317,60 @@ export async function createReservation(ctx: TenantContext, raw: unknown): Promi
   );
 }
 
+/**
+ * Release the outstanding (not yet consumed) quantity of ACTIVE reservations and close them.
+ * Locks every reservation first (sorted by id), then touches balances in a stable order, so it
+ * cannot deadlock with consumption (reservation -> balance) or with other stock operations.
+ * Non-ACTIVE reservations are skipped. Returns the number of reservations released.
+ */
+export async function releaseOutstanding(repo: InventoryRepo, reservationIds: string[], rows: MovementRow[]): Promise<number> {
+  const ids = [...new Set(reservationIds)].sort();
+  const active: string[] = [];
+  for (const id of ids) {
+    const locked = await repo.lockReservation(id);
+    if (locked?.status === "ACTIVE" && (await repo.releaseIfActive(id)) === 1) active.push(id);
+  }
+  const lines: { productId: string; positionId: string; positionCode: string; outstanding: number }[] = [];
+  for (const id of active) {
+    const reservation = await repo.findReservation(id);
+    for (const l of reservation!.lines) {
+      const outstanding = l.quantity - l.consumedQuantity;
+      if (outstanding > 0) lines.push({ productId: l.productId, positionId: l.positionId, positionCode: l.positionCode, outstanding });
+    }
+  }
+  lines.sort((a, b) => (a.positionId + a.productId < b.positionId + b.productId ? -1 : 1));
+  for (const line of lines) {
+    const after = await repo.unreserve({ positionId: line.positionId, productId: line.productId, qty: line.outstanding });
+    // Cannot happen while invariants hold (an active reservation is always backed by `reserved`).
+    if (!after) throw new ConflictError(`Reserved quantity at ${line.positionCode} is inconsistent; release aborted`);
+    const balance = await repo.getBalance(line.positionId, line.productId);
+    rows.push({
+      type: "RELEASE", warehouseId: balance!.warehouseId, productId: line.productId,
+      positionId: line.positionId, positionCode: line.positionCode,
+      qtyDelta: 0, reservedDelta: -line.outstanding, onHandAfter: after.onHand, reservedAfter: after.reserved,
+    });
+  }
+  return active.length;
+}
+
 export async function releaseReservation(ctx: TenantContext, raw: unknown): Promise<OperationResultDto> {
   requirePermission(ctx, "inventory.reserve");
   const { idempotencyKey, reservationId } = parseInput(releaseReservationSchema, raw);
-  if (!(await inventoryRepo(ctx).findReservation(reservationId))) throw new NotFoundError("Reservation not found");
+  const existing = await inventoryRepo(ctx).findReservation(reservationId);
+  if (!existing) throw new NotFoundError("Reservation not found");
+  // Reservations created by an order allocation are owned by picking (tasks depend on them):
+  // they are released through the order (release allocation / cancel), never directly.
+  if (existing.refType === "ORDER_LINE") {
+    throw new ConflictError("This reservation belongs to an order allocation. Release the order's allocation or cancel the order instead.");
+  }
 
   return runOperation(
     ctx,
     { type: "RELEASE", idempotencyKey, request: { reservationId }, refType: "RESERVATION", refId: reservationId },
     async (repo) => {
-      // ACTIVE -> RELEASED in one guarded statement: a second release finds nothing to update.
-      if ((await repo.releaseIfActive(reservationId)) === 0) throw new ConflictError("Reservation is already released");
-      const reservation = (await repo.findReservation(reservationId))!;
-      const lines = [...reservation.lines].sort((a, b) => (a.positionId + a.productId < b.positionId + b.productId ? -1 : 1));
       const rows: MovementRow[] = [];
-      for (const line of lines) {
-        const after = await repo.unreserve({ positionId: line.positionId, productId: line.productId, qty: line.quantity });
-        // Cannot happen while invariants hold (an active reservation is always backed by `reserved`).
-        if (!after) throw new ConflictError(`Reserved quantity at ${line.positionCode} is inconsistent; release aborted`);
-        const position = await repo.getBalance(line.positionId, line.productId);
-        rows.push({
-          type: "RELEASE", warehouseId: position!.warehouseId, productId: line.productId,
-          positionId: line.positionId, positionCode: line.positionCode,
-          qtyDelta: 0, reservedDelta: -line.quantity, onHandAfter: after.onHand, reservedAfter: after.reserved,
-        });
-      }
+      // ACTIVE -> RELEASED in one guarded statement: a second release finds nothing to release.
+      if ((await releaseOutstanding(repo, [reservationId], rows)) === 0) throw new ConflictError("Reservation is already released");
       return rows;
     },
     { reservationId },

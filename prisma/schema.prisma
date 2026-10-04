@@ -33,6 +33,8 @@ model Organization {
   products            Product[]
   inventoryOperations InventoryOperation[]
   reservations        Reservation[]
+  orders              Order[]
+  pickingWaves        PickingWave[]
 }
 
 // Users are GLOBAL identities (not tenant-owned). Access to an organization is via Membership.
@@ -48,6 +50,8 @@ model User {
   memberships         Membership[]
   inventoryOperations InventoryOperation[]
   reservations        Reservation[]
+  orders              Order[]
+  pickingWaves        PickingWave[]
 }
 
 // Roles are per-organization. Permission NAMES are defined in code
@@ -268,11 +272,15 @@ enum InventoryMovementType {
   ADJUSTMENT_OUT
   RESERVE
   RELEASE
+  // Picking: consumes reserved stock (onHand and reserved both decrease).
+  PICK
 }
 
 enum ReservationStatus {
   ACTIVE
   RELEASED
+  // Every line fully consumed by picking.
+  CONSUMED
 }
 
 // Product and SKU are the same entity in v1. SKU is unique per organization (stored uppercase).
@@ -291,6 +299,8 @@ model Product {
   balances         InventoryBalance[]
   movements        InventoryMovement[]
   reservationLines ReservationLine[]
+  orderLines       OrderLine[]
+  pickTasks        PickTask[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, sku])
@@ -397,10 +407,12 @@ model Reservation {
   createdByUserId String?           @db.Uuid
   createdAt       DateTime          @default(now()) @db.Timestamptz(3)
   releasedAt      DateTime?         @db.Timestamptz(3)
+  consumedAt      DateTime?         @db.Timestamptz(3)
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   createdBy    User?             @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
   lines        ReservationLine[]
+  pickTasks    PickTask[]
 
   @@unique([organizationId, id])
   @@index([organizationId, status])
@@ -408,17 +420,163 @@ model Reservation {
 
 // A claim on one product at one position. Position is a plain id + code snapshot (history).
 model ReservationLine {
-  id             String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String @db.Uuid
-  reservationId  String @db.Uuid
-  productId      String @db.Uuid
-  positionId     String @db.Uuid
-  positionCode   String
-  quantity       Int
+  id               String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String @db.Uuid
+  reservationId    String @db.Uuid
+  productId        String @db.Uuid
+  positionId       String @db.Uuid
+  positionCode     String
+  quantity         Int
+  // Quantity consumed by picking. Outstanding (still reserved) = quantity - consumedQuantity.
+  consumedQuantity Int    @default(0)
 
   reservation Reservation @relation(fields: [organizationId, reservationId], references: [organizationId, id], onDelete: Cascade)
   product     Product     @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  pickTask    PickTask?
 
+  @@unique([organizationId, id])
   @@unique([reservationId, positionId, productId])
   @@index([organizationId, productId])
+}
+
+// ---------------------------------------------------------------------------
+// Orders and picking (Phase 4). See docs/picking.md.
+// Fulfilment quantities live on OrderLine (requested >= allocated >= picked, CHECKed in the
+// migration). Stock itself is NEVER changed here: allocation reserves and picking consumes stock
+// through the inventory module (Reservation / InventoryMovement PICK).
+// ---------------------------------------------------------------------------
+
+enum OrderStatus {
+  DRAFT
+  READY
+  PARTIALLY_ALLOCATED
+  ALLOCATED
+  PICKING
+  PICKED
+  CANCELLED
+}
+
+enum WaveStatus {
+  DRAFT
+  RELEASED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum PickTaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model Order {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String      @db.Uuid
+  // Normalized (uppercase) reference, unique per organization.
+  orderNumber     String
+  status          OrderStatus @default(DRAFT)
+  // Reference in an external system, for later integrations. Not unique.
+  externalRef     String?
+  note            String?
+  createdByUserId String?     @db.Uuid
+  createdAt       DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime    @updatedAt @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy    User?        @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  lines        OrderLine[]
+  tasks        PickTask[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, orderNumber])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+}
+
+model OrderLine {
+  id             String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String @db.Uuid
+  orderId        String @db.Uuid
+  lineNo         Int
+  productId      String @db.Uuid
+  requestedQty   Int
+  // Quantity reserved for this line and not released. Outstanding reservation = allocatedQty - pickedQty.
+  allocatedQty   Int    @default(0)
+  pickedQty      Int    @default(0)
+
+  order   Order      @relation(fields: [organizationId, orderId], references: [organizationId, id], onDelete: Restrict)
+  product Product    @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  tasks   PickTask[]
+
+  @@unique([orderId, lineNo])
+  // One line per product per order keeps allocation and reporting unambiguous.
+  @@unique([orderId, productId])
+  @@unique([organizationId, id])
+  @@index([organizationId, productId])
+}
+
+model PickingWave {
+  id              String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String     @db.Uuid
+  // Human-readable sequence per organization (displayed as W-0001).
+  number          Int
+  status          WaveStatus @default(DRAFT)
+  note            String?
+  createdByUserId String?    @db.Uuid
+  createdAt       DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime   @updatedAt @db.Timestamptz(3)
+  releasedAt      DateTime?  @db.Timestamptz(3)
+  startedAt       DateTime?  @db.Timestamptz(3)
+  completedAt     DateTime?  @db.Timestamptz(3)
+  cancelledAt     DateTime?  @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy    User?        @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  tasks        PickTask[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, number])
+  @@index([organizationId, status])
+}
+
+// Pick `quantity` of one product from one physical position for one order line.
+// positionId is the authoritative location (plain id, no FK, like movements and reservation lines,
+// so history survives layout changes); positionCode is a readable snapshot.
+model PickTask {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String         @db.Uuid
+  waveId            String?        @db.Uuid
+  orderId           String         @db.Uuid
+  orderLineId       String         @db.Uuid
+  productId         String         @db.Uuid
+  positionId        String         @db.Uuid
+  positionCode      String
+  // The reservation (one per task) that backs this task's stock.
+  reservationId     String         @db.Uuid
+  reservationLineId String         @db.Uuid
+  quantity          Int
+  pickedQty         Int            @default(0)
+  status            PickTaskStatus @default(PENDING)
+  completedAt       DateTime?      @db.Timestamptz(3)
+  createdAt         DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime       @updatedAt @db.Timestamptz(3)
+
+  wave            PickingWave?    @relation(fields: [organizationId, waveId], references: [organizationId, id], onDelete: Restrict)
+  order           Order           @relation(fields: [organizationId, orderId], references: [organizationId, id], onDelete: Restrict)
+  orderLine       OrderLine       @relation(fields: [organizationId, orderLineId], references: [organizationId, id], onDelete: Restrict)
+  product         Product         @relation(fields: [organizationId, productId], references: [organizationId, id], onDelete: Restrict)
+  reservation     Reservation     @relation(fields: [organizationId, reservationId], references: [organizationId, id], onDelete: Restrict)
+  reservationLine ReservationLine @relation(fields: [organizationId, reservationLineId], references: [organizationId, id], onDelete: Restrict)
+
+  @@unique([organizationId, id])
+  // A reservation line backs at most one task.
+  @@unique([organizationId, reservationLineId])
+  @@index([organizationId, status])
+  @@index([organizationId, waveId])
+  @@index([orderId])
+  @@index([orderLineId])
+  @@index([organizationId, productId])
+  @@index([positionId])
 }

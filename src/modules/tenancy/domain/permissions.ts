@@ -15,6 +15,11 @@ export const PERMISSIONS = [
   "inventory.adjust",
   // create and release reservations
   "inventory.reserve",
+  "orders.view",
+  "orders.manage",
+  "picking.view",
+  // allocate, manage waves, confirm picks
+  "picking.manage",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -38,9 +43,16 @@ export const DEFAULT_ROLES: ReadonlyArray<{ name: string; permissions: readonly 
       "inventory.view",
       "inventory.adjust",
       "inventory.reserve",
+      "orders.view",
+      "orders.manage",
+      "picking.view",
+      "picking.manage",
     ],
   },
-  { name: "Member", permissions: ["org.read", "warehouse.view", "products.view", "inventory.view"] },
+  {
+    name: "Member",
+    permissions: ["org.read", "warehouse.view", "products.view", "inventory.view", "orders.view", "picking.view"],
+  },
 ];
 
 export const OWNER_ROLE_NAME = "Owner";

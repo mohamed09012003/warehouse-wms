@@ -29,7 +29,7 @@ describe("creating reservations", () => {
 
     const res = await getReservation(ctx, r.reservationId!);
     expect(res).toMatchObject({ status: "ACTIVE", refType: "ORDER", refId: "7", note: "order 7" });
-    expect(res.lines).toEqual([{ productId: product.id, sku: product.sku, positionId: A.id, positionCode: A.code, quantity: 4 }]);
+    expect(res.lines).toEqual([{ productId: product.id, sku: product.sku, positionId: A.id, positionCode: A.code, quantity: 4, consumedQuantity: 0 }]);
     await assertLedgerMatchesBalances();
   });
 

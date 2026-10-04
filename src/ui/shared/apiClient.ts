@@ -23,7 +23,10 @@ export async function apiRequest<T>(url: string, init: { method?: string; body?:
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new ApiError(body?.error?.message ?? `Request failed (${res.status})`, res.status, body?.error?.code ?? "ERROR");
+    // Validation errors carry the first field problem in `details`; show it instead of a bare "Invalid input".
+    const firstIssue = Array.isArray(body?.error?.details) ? body.error.details[0]?.message : undefined;
+    const message = body?.error?.message ?? `Request failed (${res.status})`;
+    throw new ApiError(firstIssue && body?.error?.code === "VALIDATION_FAILED" ? `${message}: ${firstIssue}` : message, res.status, body?.error?.code ?? "ERROR");
   }
   return body as T;
 }

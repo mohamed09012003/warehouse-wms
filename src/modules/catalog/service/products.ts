@@ -94,3 +94,13 @@ export async function lookupProducts(ctx: TenantContext, ids: string[]) {
   const rows = await productRepo(ctx).findManyByIds([...new Set(ids)]);
   return new Map(rows.map((p) => [p.id, { id: p.id, sku: p.sku, name: p.name, active: p.active }]));
 }
+
+/**
+ * Internal: resolve a typed or scanned product code (SKU or barcode) to a product id.
+ * Tenant-scoped; no permission check (callers check their own).
+ */
+export async function resolveProductCode(ctx: TenantContext, code: string) {
+  const trimmed = code.trim();
+  if (!trimmed) return null;
+  return productRepo(ctx).findByCode(trimmed);
+}

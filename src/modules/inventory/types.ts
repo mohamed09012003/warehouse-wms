@@ -1,6 +1,6 @@
 // Plain shapes returned by the inventory services and API. Type-only: safe for client components.
 
-export type InventoryMovementTypeName = "RECEIVE" | "MOVE" | "ADJUSTMENT_IN" | "ADJUSTMENT_OUT" | "RESERVE" | "RELEASE";
+export type InventoryMovementTypeName = "RECEIVE" | "MOVE" | "ADJUSTMENT_IN" | "ADJUSTMENT_OUT" | "RESERVE" | "RELEASE" | "PICK";
 
 export interface StockRowDto {
   balanceId: string;
@@ -45,11 +45,11 @@ export interface OperationResultDto {
 
 export interface ReservationDto {
   id: string;
-  status: "ACTIVE" | "RELEASED";
+  status: "ACTIVE" | "RELEASED" | "CONSUMED";
   refType: string | null;
   refId: string | null;
   note: string | null;
   createdAt: string;
   releasedAt: string | null;
-  lines: { productId: string; sku: string; positionId: string; positionCode: string; quantity: number }[];
+  lines: { productId: string; sku: string; positionId: string; positionCode: string; quantity: number; consumedQuantity: number }[];
 }

@@ -77,3 +77,12 @@ Organization ─┬─ Membership ── User            (users are global; memb
 ## Implemented in Phase 3
 
 `Product` (= SKU in v1; active/disabled, never deleted), `ProductBarcode`, `InventoryBalance`, `InventoryMovement` (with an `InventoryOperation` header), `Reservation` / `ReservationLine`. Lifecycles: Reservation ACTIVE → RELEASED. Orders, picking and packing entities are still design-only. Invariant 2 ("every change has a movement in the same transaction") and the stock invariants above are enforced by the inventory service plus database CHECKs; invariant 4 is now enforced for stock-holding positions (see `docs/inventory.md`).
+
+## Implemented in Phase 4
+
+`Order` / `OrderLine`, `PickingWave`, `PickTask`. Lifecycles (full detail and diagrams in `docs/picking.md`):
+- **Order**: DRAFT → READY → PARTIALLY_ALLOCATED / ALLOCATED → PICKING → PICKED, or CANCELLED. Derived from line quantities after every allocation, pick, release and cancel.
+- **Wave**: DRAFT → RELEASED → IN_PROGRESS → COMPLETED, or CANCELLED.
+- **PickTask**: PENDING → IN_PROGRESS → COMPLETED, or CANCELLED.
+- **Reservation** gains CONSUMED (all lines consumed by picking); a task is backed by exactly one reservation line. Packing, shipping and order integrations are still design-only.
+Invariants added: `requested ≥ allocated ≥ picked ≥ 0` per order line; `0 ≤ pickedQty ≤ quantity` per task; stock leaves the ledger only through a `PICK` movement tied to a reservation.

@@ -84,3 +84,52 @@ export async function assertLedgerMatchesBalances() {
   const invalid = rows.filter((r) => r.onHand < 0 || r.reserved < 0 || r.reserved > r.onHand);
   if (invalid.length) throw new Error("Invalid balance rows found");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4 (orders and picking) fixtures
+// ---------------------------------------------------------------------------
+import { createOrder, type OrderDetailDto } from "@/modules/orders";
+import { receiveStock } from "@/modules/inventory";
+import { addOrdersToWave, allocateOrder, createWave, releaseWave, startWave } from "@/modules/picking";
+
+let orderCounter = 0;
+export async function makeOrder(
+  ctx: TenantContext,
+  lines: { productId: string; quantity: number }[],
+  opts: { ready?: boolean; orderNumber?: string } = {},
+): Promise<OrderDetailDto> {
+  orderCounter += 1;
+  return createOrder(ctx, { orderNumber: opts.orderNumber ?? `ORD-${orderCounter}`, lines, ready: opts.ready ?? true });
+}
+
+export async function stockAt(ctx: TenantContext, productId: string, positionId: string, quantity: number) {
+  return receiveStock(ctx, { productId, positionId, quantity });
+}
+
+/** Allocate an order, put its tasks in a new wave, release and start the wave. Returns the wave id. */
+export async function prepareWave(ctx: TenantContext, orderIds: string[]) {
+  for (const id of orderIds) await allocateOrder(ctx, { orderId: id });
+  const wave = await createWave(ctx, {});
+  await addOrdersToWave(ctx, { waveId: wave.id, orderIds });
+  await releaseWave(ctx, { waveId: wave.id });
+  return (await startWave(ctx, { waveId: wave.id })).id;
+}
+
+/** Invariants that must hold at all times for orders, tasks and stock. */
+export async function assertPickingInvariants() {
+  await assertLedgerMatchesBalances();
+  const badLines = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "OrderLine" WHERE "pickedQty" > "allocatedQty" OR "allocatedQty" > "requestedQty" OR "pickedQty" < 0`;
+  if (badLines.length) throw new Error("order line invariant broken");
+  const badTasks = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "PickTask" WHERE "pickedQty" > "quantity" OR "pickedQty" < 0`;
+  if (badTasks.length) throw new Error("pick task invariant broken");
+  // outstanding reservation (quantity - consumed) of ACTIVE reservations == balances' reserved, in total
+  const [{ reservedTotal, activeOutstanding }] = await prisma.$queryRaw<{ reservedTotal: bigint | null; activeOutstanding: bigint | null }[]>`
+    SELECT (SELECT COALESCE(SUM("reserved"), 0) FROM "InventoryBalance") AS "reservedTotal",
+           (SELECT COALESCE(SUM(l."quantity" - l."consumedQuantity"), 0) FROM "ReservationLine" l
+              JOIN "Reservation" r ON r."id" = l."reservationId" WHERE r."status"::text = 'ACTIVE') AS "activeOutstanding"`;
+  if (Number(reservedTotal) !== Number(activeOutstanding)) {
+    throw new Error(`reserved (${reservedTotal}) != outstanding of active reservations (${activeOutstanding})`);
+  }
+}

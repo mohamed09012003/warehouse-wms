@@ -99,6 +99,87 @@ export function inventoryRepo(ctx: TenantContext, db: DbClient = prisma) {
       return rows[0] ?? null;
     },
 
+    /**
+     * Picking: consume reserved stock. onHand AND reserved both fall by qty, only if that much is
+     * reserved (and therefore on hand). null = the reserved stock is not there.
+     */
+    async consume(a: { positionId: string; productId: string; qty: number }): Promise<BalanceAfter | null> {
+      const rows = await db.$queryRaw<BalanceAfter[]>`
+        UPDATE "InventoryBalance"
+           SET "onHand" = "onHand" - ${a.qty}::int, "reserved" = "reserved" - ${a.qty}::int,
+               "version" = "version" + 1, "updatedAt" = now()
+         WHERE "organizationId" = ${orgId}::uuid AND "positionId" = ${a.positionId}::uuid AND "productId" = ${a.productId}::uuid
+           AND "reserved" >= ${a.qty}::int AND "onHand" >= ${a.qty}::int
+        RETURNING "onHand", "reserved"`;
+      return rows[0] ?? null;
+    },
+
+    /**
+     * Allocation: reserve as much as is AVAILABLE, up to qty, in one statement. The balance row is
+     * locked inside the statement, so the amount taken is exact even under concurrency.
+     * null = nothing available.
+     */
+    async reserveUpTo(a: { positionId: string; productId: string; qty: number }): Promise<(BalanceAfter & { took: number }) | null> {
+      const rows = await db.$queryRaw<(BalanceAfter & { took: number })[]>`
+        WITH target AS (
+          SELECT "id", "onHand" - "reserved" AS avail
+            FROM "InventoryBalance"
+           WHERE "organizationId" = ${orgId}::uuid AND "positionId" = ${a.positionId}::uuid AND "productId" = ${a.productId}::uuid
+             AND "onHand" - "reserved" > 0
+             FOR UPDATE
+        )
+        UPDATE "InventoryBalance" b
+           SET "reserved" = b."reserved" + LEAST(${a.qty}::int, t.avail), "version" = b."version" + 1, "updatedAt" = now()
+          FROM target t
+         WHERE b."id" = t."id"
+        RETURNING LEAST(${a.qty}::int, t.avail) AS "took", b."onHand", b."reserved"`;
+      return rows[0] ?? null;
+    },
+
+    /** Positions holding available stock of a product, in a stable physical order (rack, level, bay, position). */
+    availableStock: (productId: string) =>
+      db.$queryRaw<{ positionId: string; positionCode: string; warehouseId: string; available: number }[]>`
+        SELECT b."positionId", p."code" AS "positionCode", b."warehouseId", (b."onHand" - b."reserved") AS "available"
+          FROM "InventoryBalance" b
+          JOIN "Position" p ON p."id" = b."positionId"
+          JOIN "Rack" r ON r."id" = p."rackId"
+          JOIN "RackLevel" l ON l."id" = p."levelId"
+          JOIN "Bay" y ON y."id" = p."bayId"
+         WHERE b."organizationId" = ${orgId}::uuid AND b."productId" = ${productId}::uuid AND b."onHand" - b."reserved" > 0
+         ORDER BY r."code", l."levelIndex", y."bayIndex", p."positionIndex", p."id"`,
+
+    /** Row lock on a reservation (lock order: reservation before its balances). */
+    async lockReservation(id: string): Promise<{ id: string; status: string; refType: string | null } | null> {
+      const rows = await db.$queryRaw<{ id: string; status: string; refType: string | null }[]>`
+        SELECT "id", "status"::text AS "status", "refType" FROM "Reservation"
+         WHERE "organizationId" = ${orgId}::uuid AND "id" = ${id}::uuid FOR UPDATE`;
+      return rows[0] ?? null;
+    },
+
+    /** Add to a line's consumed quantity only if it stays within the reserved quantity. null = would exceed. */
+    async consumeLine(id: string, qty: number) {
+      const rows = await db.$queryRaw<
+        { reservationId: string; productId: string; positionId: string; positionCode: string; quantity: number; consumedQuantity: number }[]
+      >`
+        UPDATE "ReservationLine"
+           SET "consumedQuantity" = "consumedQuantity" + ${qty}::int
+         WHERE "organizationId" = ${orgId}::uuid AND "id" = ${id}::uuid AND "consumedQuantity" + ${qty}::int <= "quantity"
+        RETURNING "reservationId", "productId", "positionId", "positionCode", "quantity", "consumedQuantity"`;
+      return rows[0] ?? null;
+    },
+
+    /** ACTIVE -> CONSUMED once every line is fully consumed. Returns whether it closed. */
+    async closeReservationIfConsumed(id: string): Promise<boolean> {
+      const n = await db.$executeRaw`
+        UPDATE "Reservation" r
+           SET "status" = 'CONSUMED'::"ReservationStatus", "consumedAt" = now()
+         WHERE r."organizationId" = ${orgId}::uuid AND r."id" = ${id}::uuid AND r."status" = 'ACTIVE'::"ReservationStatus"
+           AND NOT EXISTS (SELECT 1 FROM "ReservationLine" l WHERE l."reservationId" = r."id" AND l."consumedQuantity" < l."quantity")`;
+      return n > 0;
+    },
+
+    findReservationLine: (id: string) => db.reservationLine.findFirst({ where: { ...org, id } }),
+
     // ---- reads ---------------------------------------------------------------------------
 
     /** The product that currently has stock (onHand > 0) at a position, if any. */
@@ -185,7 +266,8 @@ export function inventoryRepo(ctx: TenantContext, db: DbClient = prisma) {
       await db.reservationLine.createMany({
         data: data.lines.map((l) => ({ ...l, organizationId: orgId, reservationId: reservation.id })),
       });
-      return reservation;
+      const lines = await db.reservationLine.findMany({ where: { ...org, reservationId: reservation.id } });
+      return { ...reservation, lines };
     },
 
     /** ACTIVE -> RELEASED in one guarded statement, so a reservation can be released only once. */

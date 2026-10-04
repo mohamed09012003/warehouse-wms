@@ -90,6 +90,8 @@ export function warehouseRepo(ctx: TenantContext, db: DbClient = prisma) {
     /** Tenant-scoped lookup used by inventory (ids from other organizations are simply absent). */
     positionsByIds: (ids: string[]) =>
       db.position.findMany({ where: { ...org, id: { in: ids } }, select: { id: true, code: true, warehouseId: true } }),
+    positionByCode: (warehouseId: string, code: string) =>
+      db.position.findFirst({ where: { ...org, warehouseId, code }, select: { id: true, code: true } }),
     searchPositions: (warehouseId: string, prefix: string, limit: number) =>
       db.position.findMany({
         where: { ...org, warehouseId, ...(prefix ? { code: { startsWith: prefix } } : {}) },

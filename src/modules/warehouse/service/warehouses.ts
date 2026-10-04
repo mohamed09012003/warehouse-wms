@@ -126,3 +126,10 @@ export async function searchPositions(ctx: TenantContext, warehouseId: string, q
   const prefix = query.trim().toUpperCase().slice(0, 40);
   return warehouseRepo(ctx).searchPositions(warehouseId, prefix, 30);
 }
+
+/** Internal: resolve a typed or scanned location code to a position of one warehouse (no permission check). */
+export async function resolvePositionCode(ctx: TenantContext, warehouseId: string, code: string) {
+  const normalized = code.trim().toUpperCase();
+  if (!normalized) return null;
+  return warehouseRepo(ctx).positionByCode(warehouseId, normalized);
+}

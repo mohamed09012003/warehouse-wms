@@ -38,7 +38,9 @@ export function ReservationsPanel({ orgSlug, reservations, canReserve }: { orgSl
               ))}
               {(r.note || r.refType) && <div className="text-xs text-muted-foreground">{[r.refType && `${r.refType} ${r.refId ?? ""}`, r.note].filter(Boolean).join(" · ")}</div>}
             </div>
-            {canReserve && (
+            {r.refType === "ORDER_LINE" ? (
+              <span className="text-xs text-muted-foreground">Allocated to an order</span>
+            ) : canReserve && (
               <Button type="button" size="sm" variant="outline" disabled={pendingId === r.id} onClick={() => release(r.id)}>
                 Release
               </Button>

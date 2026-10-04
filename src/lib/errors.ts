@@ -11,6 +11,12 @@ export type ErrorCode =
   | "INSUFFICIENT_STOCK"
   | "POSITION_IN_USE"
   | "POSITION_OCCUPIED"
+  | "RESERVATION_UNAVAILABLE"
+  | "INVALID_STATE"
+  | "WRONG_LOCATION"
+  | "WRONG_PRODUCT"
+  | "TASK_NOT_PICKABLE"
+  | "PICK_QUANTITY_EXCEEDED"
   | "DATABASE_ERROR"
   | "INTERNAL_ERROR";
 
@@ -88,6 +94,48 @@ function driverCause(error: unknown) {
 export function mentionsConstraint(error: unknown, name: string): boolean {
   const cause = driverCause(error);
   return [cause?.constraint, cause?.originalMessage, cause?.message].some((v) => typeof v === "string" && v.includes(name));
+}
+
+/** The reservation backing a pick no longer holds the stock (released, consumed or inconsistent). */
+export class ReservationUnavailableError extends AppError {
+  constructor(message = "The reserved stock is no longer available", details?: unknown) {
+    super("RESERVATION_UNAVAILABLE", 409, message, details);
+  }
+}
+
+/** The requested action is not allowed in the entity's current status (order, wave, task). */
+export class InvalidStateError extends AppError {
+  constructor(message = "This action is not allowed in the current status", details?: unknown) {
+    super("INVALID_STATE", 409, message, details);
+  }
+}
+
+/** The scanned/typed location is not the task's source position. */
+export class WrongLocationError extends AppError {
+  constructor(message = "Wrong location", details?: unknown) {
+    super("WRONG_LOCATION", 422, message, details);
+  }
+}
+
+/** The scanned/typed product is not the task's product. */
+export class WrongProductError extends AppError {
+  constructor(message = "Wrong product", details?: unknown) {
+    super("WRONG_PRODUCT", 422, message, details);
+  }
+}
+
+/** The pick task cannot be picked now (completed, cancelled, wave not started, ...). */
+export class TaskNotPickableError extends AppError {
+  constructor(message = "This task cannot be picked", details?: unknown) {
+    super("TASK_NOT_PICKABLE", 409, message, details);
+  }
+}
+
+/** The quantity exceeds what is left on the task or the order line. */
+export class PickQuantityError extends AppError {
+  constructor(message = "Quantity exceeds what remains to pick", details?: unknown) {
+    super("PICK_QUANTITY_EXCEEDED", 422, message, details);
+  }
 }
 
 export class DatabaseError extends AppError {

@@ -26,6 +26,12 @@ export function productRepo(ctx: TenantContext, db: DbClient = prisma) {
         include: { _count: { select: { barcodes: true } } },
       }),
     findById: (id: string) => db.product.findFirst({ where: { ...org, id }, include: { barcodes: { orderBy: { createdAt: "asc" } } } }),
+    /** Resolve a typed or scanned value: the SKU (case-insensitive) or any barcode of the organization. */
+    findByCode: (code: string) =>
+      db.product.findFirst({
+        where: { ...org, OR: [{ sku: code.toUpperCase() }, { barcodes: { some: { barcode: code } } }] },
+        select: { id: true, sku: true },
+      }),
     findManyByIds: (ids: string[]) => db.product.findMany({ where: { ...org, id: { in: ids } } }),
     create: (data: { sku: string; name: string; description: string | null }) =>
       db.product.create({ data: { ...data, organizationId: ctx.organizationId } }),

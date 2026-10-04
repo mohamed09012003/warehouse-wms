@@ -54,7 +54,7 @@ function toReservationDto(r: NonNullable<Awaited<ReturnType<ReturnType<typeof in
     note: r.note,
     createdAt: r.createdAt.toISOString(),
     releasedAt: r.releasedAt?.toISOString() ?? null,
-    lines: r.lines.map((l) => ({ productId: l.productId, sku: l.product.sku, positionId: l.positionId, positionCode: l.positionCode, quantity: l.quantity })),
+    lines: r.lines.map((l) => ({ productId: l.productId, sku: l.product.sku, positionId: l.positionId, positionCode: l.positionCode, quantity: l.quantity, consumedQuantity: l.consumedQuantity })),
   };
 }
 

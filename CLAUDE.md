@@ -6,7 +6,7 @@ Read `/docs` before changing architecture. Start with `docs/architecture.md` and
 
 ## Current phase
 
-Phase 3 (catalog + inventory core) is implemented and awaiting review; Phases 0-2 are committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
+Phase 4 (orders + picking) is implemented and awaiting review; Phases 0-3 are committed. **Do not begin the next phase until the user explicitly says so.** See `docs/roadmap.md`.
 
 Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/dist/docs/` before writing Next-specific code.
 
@@ -18,6 +18,14 @@ Next.js 16 differs from older versions: read `AGENTS.md` and `node_modules/next/
 - A position holds stock of ONE product at a time (partial unique index on `InventoryBalance(positionId) WHERE onHand > 0`; a different product gets `POSITION_OCCUPIED`). Never work around it; emptied positions are free again.
 - Reserved stock is not movable/adjustable; operations consume *available* (onHand − reserved) stock only.
 - Tests that touch inventory must run against the test database and may use `assertLedgerMatchesBalances` (tests/support/fixtures.ts).
+
+## Picking rules (Phase 4)
+
+- Orders and picking never change `InventoryBalance` or reservations directly. They use the inventory composition API (`runStockOperation` with `reservePlan` / `consume` / `releaseReservations`) so the stock change, its `InventoryMovement` rows and the picking updates commit in ONE transaction.
+- Pick confirmation has a single code path (`confirmPick`) shared by the manual screen and any future scanner; it takes a location code, a SKU/barcode and a quantity, and verifies everything server-side.
+- Multi-row picking flows lock in this order: Wave → Order → PickTask → Reservation → InventoryBalance → OrderLine updates; ascending id within a type. Do not invent a different order.
+- Order-line quantities obey `requested ≥ allocated ≥ picked ≥ 0`; change them only through the guarded updates in `picking/repo`. Reservations created by allocation (`refType = ORDER_LINE`) are released only through the order/wave, never directly.
+- New movement types or enum values need a migration that also updates the movement CHECK (it ends with `ELSE false`); enum values added by `ALTER TYPE … ADD VALUE` cannot be used in the same migration, so compare through `::text`.
 
 ## Commands
 

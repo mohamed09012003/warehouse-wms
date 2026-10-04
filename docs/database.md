@@ -133,3 +133,16 @@ CREATE UNIQUE INDEX "InventoryBalance_one_product_per_position_idx"
 ```
 
 Hand-written because Prisma cannot model partial indexes; `schema.prisma` is unchanged and `prisma migrate diff` reports no drift. A DO block at the top of the migration aborts with a descriptive error (no data is changed) if existing rows already violate the rule. The unique violation (23505) naming this index is mapped to `POSITION_OCCUPIED` in `normalizeError`. See `docs/inventory.md`.
+
+## Implemented in Phase 4 (migration `orders_picking`)
+
+Tables: `Order`, `OrderLine`, `PickingWave`, `PickTask`; enums `OrderStatus` (DRAFT, READY, PARTIALLY_ALLOCATED, ALLOCATED, PICKING, PICKED, CANCELLED), `WaveStatus` (DRAFT, RELEASED, IN_PROGRESS, COMPLETED, CANCELLED), `PickTaskStatus` (PENDING, IN_PROGRESS, COMPLETED, CANCELLED). New enum values: `InventoryMovementType.PICK`, `ReservationStatus.CONSUMED`. New columns: `ReservationLine.consumedQuantity`, `Reservation.consumedAt`; new unique `ReservationLine(organizationId, id)`.
+
+- **Tenancy**: every table has `organizationId`; all references are composite FKs `(organizationId, id)` (order→lines, line→product, task→order / order line / wave / product / reservation / reservation line). A task cannot reference another organization's record (tests attempt each reference).
+- **`Order`**: `unique(organizationId, orderNumber)` (uppercase, CHECK `^[A-Z0-9][A-Z0-9._/-]{0,39}$`); `externalRef` is not unique. Index `(organizationId, status)`, `(organizationId, createdAt)`.
+- **`OrderLine`**: `unique(orderId, lineNo)`, `unique(orderId, productId)`; CHECK `lineNo >= 1 AND requestedQty > 0 AND requestedQty <= 100000000 AND pickedQty >= 0 AND pickedQty <= allocatedQty AND allocatedQty <= requestedQty`.
+- **`PickingWave`**: `unique(organizationId, number)` (per-organization sequence, retried on collision); lifecycle timestamps.
+- **`PickTask`**: `positionId` is a plain id plus `positionCode` snapshot (no FK, like movements and reservation lines); `unique(organizationId, reservationLineId)` (a reservation line backs at most one task); CHECK `quantity > 0 AND 0 <= pickedQty <= quantity` and status consistency (`COMPLETED ⇒ pickedQty = quantity`, `PENDING ⇒ pickedQty = 0`). Indexes: `(organizationId, status)`, `(organizationId, waveId)`, `orderId`, `orderLineId`, `(organizationId, productId)`, `positionId`.
+- **`InventoryMovement_shape_check`** replaced (adds PICK, `ELSE false`). **`ReservationLine_consumed_check`**: `0 <= consumedQuantity <= quantity`.
+- **Enum values in one migration**: `ALTER TYPE … ADD VALUE` cannot be *used* in the same transaction, so the new constraints compare enum columns through `::text` and never mention PICK/CONSUMED as enum literals; application code uses them only after the migration commits.
+- The migration adds `orders.view/manage` and `picking.view/manage` to the existing built-in roles (nothing is removed).
